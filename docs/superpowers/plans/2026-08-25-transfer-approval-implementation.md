@@ -19,7 +19,8 @@
 - Core Banking is never a third deployable service — it is `CoreBankingClient` (interface) + a stub implementation inside `transfer-service`.
 - Workflow YAML loader has a 2-hour tripwire (Task 1): if it's not working with validation + guard registry + one end-to-end test inside that budget, stop and switch to the Task 1 fallback (hardcoded `EnumMap`), and note the trade-off in the README.
 - No domain rules (`amount > threshold`, `balance >= amount`, etc.) inside Approval Engine guards — engine guards are generic only (`approval_required`, `approvals_satisfied`, `actor_is_maker`, `actor_is_eligible_checker`, `sla_expired`).
-- Every competing state transition uses exactly one mechanism: a single guarded conditional `UPDATE ... WHERE state = :expected AND version = :expected` — no `@Version`-exception-based locking, no explicit row locks, no special-cased race handling.
+- Every competing *transition attempt* uses one mechanism: a single guarded conditional `UPDATE ... WHERE state = :expected AND version = :expected` — no `@Version`-exception-based locking, no special-cased race handling. **Amendment (post-review):** `approve`/`reject`/`cancel` additionally take a `SELECT ... FOR UPDATE` row lock on the request *before* counting decisions, because quorum counting is an aggregate read, not a transition — two concurrent transactions under READ COMMITTED can each undercount (neither sees the other's uncommitted decision) and both skip the transition entirely, stranding a quorum-satisfied request in `PENDING_APPROVAL` forever. The guarded UPDATE alone only protects the transition *attempt*, not the decision of whether to attempt one. The expiry sweeper still needs no explicit lock of its own — its plain guarded UPDATE naturally blocks behind a concurrent `approve`/`reject`/`cancel`'s row lock and re-checks fresh state once unblocked.
+- **Never call a `@Transactional` method on `this` from within the same class.** Spring's proxy-based AOP does not intercept self-invocation, so the annotation is silently a no-op — the method runs with no transaction (each repository call gets its own ad-hoc one instead). Any transactional unit that a scheduled/looping method needs must live on a separate injected bean, called through the real proxy.
 - Controller/MockMvc tests are lowest priority (spec §20) — cover happy path + one 409 case per endpoint, do not over-invest.
 - `spring.jpa.hibernate.ddl-auto=update` is the deliberate schema-management trade-off for this exercise (no Flyway) — state this in the README, don't silently deviate from it mid-plan.
 
@@ -109,7 +110,12 @@ spring:
   application:
     name: approval-engine
   datasource:
-    url: jdbc:postgresql://localhost:5433/approval
+    # stringtype=unspecified: several columns (payload, policy_snapshot,
+    # outbox.payload, idempotency_key.result) are jsonb fed by a plain Java
+    # String (via AttributeConverter or a direct String field). Without this,
+    # the Postgres JDBC driver binds the String as varchar and Postgres
+    # rejects it ("column is jsonb but expression is character varying").
+    url: jdbc:postgresql://localhost:5433/approval?stringtype=unspecified
     username: approval
     password: approval
   jpa:
@@ -971,7 +977,9 @@ package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.ApprovalState;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -998,6 +1006,17 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
                            @Param("newState") ApprovalState newState);
 
     List<ApprovalRequest> findByStateAndExpiresAtBefore(ApprovalState state, Instant cutoff);
+
+    /**
+     * Row lock for approve/reject/cancel (Task 5), taken before counting
+     * decisions. Quorum counting is an aggregate read, not a single-row
+     * transition — without this lock, two concurrent approvers can each
+     * undercount (neither sees the other's uncommitted decision) and both
+     * skip the transition, stranding a quorum-satisfied request forever.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM ApprovalRequest a WHERE a.requestId = :requestId")
+    Optional<ApprovalRequest> findByRequestIdForUpdate(@Param("requestId") String requestId);
 }
 ```
 
@@ -1735,8 +1754,14 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
         return new ApprovalRequestView(requestId, ApprovalState.CANCELLED, request.getVersion() + 1);
     }
 
+    // Row-locking on purpose (spec §12 amendment): approve/reject/cancel all
+    // read-then-maybe-transition based on a decision COUNT, which is an
+    // aggregate, not a single-row transition — the guarded UPDATE alone can't
+    // protect it. Taking the lock here serializes concurrent commands on the
+    // same request, so the second one to run always sees the first's
+    // committed decision before deciding whether quorum is met.
     private ApprovalRequest loadOrThrow(String requestId) {
-        return requests.findByRequestId(requestId)
+        return requests.findByRequestIdForUpdate(requestId)
                 .orElseThrow(() -> new ApprovalRequestNotFoundException(requestId));
     }
 
@@ -1831,6 +1856,44 @@ class ApprovalConcurrencyTest {
         return requestId;
     }
 
+    private String createPendingRequiredTwo(String requestId) {
+        service.create(new CreateApprovalRequest(requestId, "TRANSFER_APPROVAL", "maker-1",
+                new PolicySnapshot("v1", 2, List.of("TRANSFER_CHECKER"), false),
+                "{}", Instant.now().plusSeconds(86400)), UUID.randomUUID().toString());
+        return requestId;
+    }
+
+    @Test
+    void twoCheckersSatisfyingQuorumSimultaneously_bothRecordedAndTransitionHappensExactlyOnce() throws Exception {
+        // Regression test for the undercounting race: without the row lock in
+        // loadOrThrow, both checkers can each count only their own decision
+        // (count=1 < required=2), both skip the transition, and the request
+        // gets stuck in PENDING_APPROVAL forever despite quorum being met.
+        String id = createPendingRequiredTwo("race-quorum");
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+
+        Callable<Object> checkerA = raceTask(startGate, () ->
+                service.approve(id, "checker-A", "TRANSFER_CHECKER"));
+        Callable<Object> checkerB = raceTask(startGate, () ->
+                service.approve(id, "checker-B", "TRANSFER_CHECKER"));
+
+        Future<Object> futureA = pool.submit(checkerA);
+        Future<Object> futureB = pool.submit(checkerB);
+        startGate.countDown();
+
+        Object outcomeA = resolve(futureA);
+        Object outcomeB = resolve(futureB);
+        pool.shutdown();
+
+        // Both approvals are legitimate — quorum requires exactly these two —
+        // so neither should be rejected as a lost race.
+        assertThat(outcomeA).isInstanceOf(ApprovalRequestView.class);
+        assertThat(outcomeB).isInstanceOf(ApprovalRequestView.class);
+        assertThat(requests.findByRequestId(id).get().getState()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(decisions.countByRequestIdAndDecision(id, ApprovalDecision.DecisionType.APPROVE)).isEqualTo(2);
+    }
+
     @Test
     void twoCheckersApprovingSimultaneously_exactlyOneWins() throws Exception {
         String id = createPendingRequiredOne("race-checkers");
@@ -1905,7 +1968,7 @@ class ApprovalConcurrencyTest {
 - [ ] **Step 2: Run test to verify current behavior**
 
 Run: `cd approval-engine && ./gradlew test --tests ApprovalConcurrencyTest`
-Expected: PASS immediately — Task 5's `guardedTransition` mechanism already provides the race safety; this task exists to prove it under real thread concurrency, not to add new production code. If either test is flaky or both threads report success, that means the guarded update isn't actually serializing the two transactions correctly — stop and re-examine Task 5's `guardedTransition` query and the transaction isolation level (`spring.datasource.hikari` defaults / Postgres default `READ COMMITTED` should be sufficient here since the guard is a row-level conditional update, not a read-then-write check).
+Expected: PASS (3 tests) — Task 5's `findByRequestIdForUpdate` row lock plus `guardedTransition` together provide the race safety; this task exists to prove it under real thread concurrency, not to add new production code. The quorum test (`twoCheckersSatisfyingQuorumSimultaneously...`) is the one that would have failed before the row-lock fix — both checkers would have returned `PENDING_APPROVAL` and the assertion on final state `APPROVED` would fail, with 0 rather than 2 decisions transitioning it. If any test is flaky or the quorum test's final state isn't `APPROVED`, stop and re-examine Task 5's `loadOrThrow`/`findByRequestIdForUpdate` — the lock must be acquired before the decision count, not after.
 
 - [ ] **Step 3: Commit**
 
@@ -1919,6 +1982,7 @@ git commit -m "test(approval-engine): verify concurrent approval races resolve t
 ### Task 7: Outbox relay — polls unpublished events, HTTP-pushes to Transfer, retries on failure
 
 **Files:**
+- Create: `approval-engine/src/main/java/com/visionbank/approval/service/OutboxClaimService.java`
 - Create: `approval-engine/src/main/java/com/visionbank/approval/service/OutboxRelay.java`
 - Test: `approval-engine/src/test/java/com/visionbank/approval/service/OutboxRelayTest.java`
 
@@ -2026,59 +2090,33 @@ class OutboxRelayTest {
 Run: `cd approval-engine && ./gradlew test --tests OutboxRelayTest`
 Expected: FAIL — `OutboxRelay` does not exist.
 
-- [ ] **Step 3: Implement the relay**
+- [ ] **Step 3: Implement the claim service and the relay as two separate beans**
 
-`approval-engine/src/main/java/com/visionbank/approval/service/OutboxRelay.java`:
+Split deliberately in two: `OutboxRelay.relayOnce()` orchestrates and makes the HTTP call; `OutboxClaimService` owns both transactional units. If `claimBatch`/`markPublished` lived on `OutboxRelay` itself and `relayOnce()` called `this.claimBatch()`, Spring's proxy-based AOP would never see that call — `@Transactional` on a self-invoked method is silently a no-op, each repository call would get its own ad-hoc transaction instead, and the `FOR UPDATE SKIP LOCKED` lock from `selectAndLockUnpublishedIds` would release the instant that single query returned — before `markClaimed` ran, defeating the whole claim mechanism from Task 3. Calling through a *different* injected bean goes through the real proxy, so this only works because it's two classes.
+
+`approval-engine/src/main/java/com/visionbank/approval/service/OutboxClaimService.java`:
 ```java
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.OutboxEvent;
 import com.visionbank.approval.repository.OutboxEventRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatusCode;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 @Service
-public class OutboxRelay {
+public class OutboxClaimService {
 
-    private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
     private static final Duration STALE_CLAIM_AFTER = Duration.ofSeconds(30);
     private static final int BATCH_SIZE = 50;
 
     private final OutboxEventRepository outbox;
-    private final RestClient restClient;
-    private final String webhookUrl;
 
-    public OutboxRelay(OutboxEventRepository outbox,
-                        @Value("${transfer-service.webhook-url}") String webhookUrl) {
+    public OutboxClaimService(OutboxEventRepository outbox) {
         this.outbox = outbox;
-        this.webhookUrl = webhookUrl;
-        this.restClient = RestClient.create();
-    }
-
-    @Scheduled(fixedDelay = 2000)
-    public int relayOnce() {
-        List<OutboxEvent> claimed = claimBatch();
-        int published = 0;
-        for (OutboxEvent event : claimed) {
-            if (publish(event)) {
-                markPublished(event.getEventId());
-                published++;
-            }
-            // On failure, claimedAt stays set — it becomes reclaimable once
-            // it's older than STALE_CLAIM_AFTER, so a crash mid-publish
-            // doesn't strand the event forever.
-        }
-        return published;
     }
 
     // Locks, claims, and releases the row lock within one short transaction —
@@ -2086,7 +2124,7 @@ public class OutboxRelay {
     // relay instance to run this concurrently: FOR UPDATE SKIP LOCKED means
     // two instances never claim the same row in the same pass.
     @Transactional
-    List<OutboxEvent> claimBatch() {
+    public List<OutboxEvent> claimBatch() {
         List<String> ids = outbox.selectAndLockUnpublishedIds(Instant.now().minus(STALE_CLAIM_AFTER), BATCH_SIZE);
         if (ids.isEmpty()) {
             return List.of();
@@ -2096,11 +2134,60 @@ public class OutboxRelay {
     }
 
     @Transactional
-    void markPublished(String eventId) {
+    public void markPublished(String eventId) {
         outbox.findById(eventId).ifPresent(e -> {
             e.setPublishedAt(Instant.now());
             outbox.save(e);
         });
+    }
+}
+```
+
+`approval-engine/src/main/java/com/visionbank/approval/service/OutboxRelay.java`:
+```java
+package com.visionbank.approval.service;
+
+import com.visionbank.approval.domain.OutboxEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+
+import java.util.List;
+
+@Service
+public class OutboxRelay {
+
+    private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
+
+    private final OutboxClaimService claimService;
+    private final RestClient restClient;
+    private final String webhookUrl;
+
+    public OutboxRelay(OutboxClaimService claimService,
+                        @Value("${transfer-service.webhook-url}") String webhookUrl) {
+        this.claimService = claimService;
+        this.webhookUrl = webhookUrl;
+        this.restClient = RestClient.create();
+    }
+
+    @Scheduled(fixedDelay = 2000)
+    public int relayOnce() {
+        List<OutboxEvent> claimed = claimService.claimBatch();
+        int published = 0;
+        for (OutboxEvent event : claimed) {
+            if (publish(event)) {
+                claimService.markPublished(event.getEventId());
+                published++;
+            }
+            // On failure, claimedAt stays set — it becomes reclaimable once
+            // it's older than the claim service's stale-claim window, so a
+            // crash mid-publish doesn't strand the event forever.
+        }
+        return published;
     }
 
     private boolean publish(OutboxEvent event) {
@@ -2139,6 +2226,7 @@ git commit -m "feat(approval-engine): outbox relay with at-least-once HTTP deliv
 ### Task 8: Expiry sweeper (per-row guarded transitions) + expiry-vs-approve race test
 
 **Files:**
+- Create: `approval-engine/src/main/java/com/visionbank/approval/service/ExpiryTransitionService.java`
 - Create: `approval-engine/src/main/java/com/visionbank/approval/service/ExpirySweeper.java`
 - Test: `approval-engine/src/test/java/com/visionbank/approval/service/ExpirySweeperTest.java`
 - Test: `approval-engine/src/test/java/com/visionbank/approval/service/ExpiryVersusApproveConcurrencyTest.java`
@@ -2229,49 +2317,36 @@ class ExpirySweeperTest {
 Run: `cd approval-engine && ./gradlew test --tests ExpirySweeperTest`
 Expected: FAIL — `ExpirySweeper` does not exist.
 
-- [ ] **Step 3: Implement the sweeper**
+- [ ] **Step 3: Implement the transition service and the sweeper as two separate beans**
 
-`approval-engine/src/main/java/com/visionbank/approval/service/ExpirySweeper.java`:
+Same self-invocation hazard as Task 7: if `sweepOnce()` called `this.expireOne(...)` within the same class, `@Transactional` on `expireOne` would be silently inert, breaking the atomicity of guardedTransition+audit+outbox that spec §13/§15 require. Splitting into `ExpiryTransitionService` (the transactional unit) and `ExpirySweeper` (the loop, calling through the real proxy) fixes it the same way `OutboxClaimService`/`OutboxRelay` did in Task 7.
+
+`approval-engine/src/main/java/com/visionbank/approval/service/ExpiryTransitionService.java`:
 ```java
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.AuditLog;
 import com.visionbank.approval.domain.OutboxEvent;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import com.visionbank.approval.repository.AuditLogRepository;
 import com.visionbank.approval.repository.OutboxEventRepository;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
 
 @Service
-public class ExpirySweeper {
+public class ExpiryTransitionService {
 
     private final ApprovalRequestRepository requests;
     private final AuditLogRepository audits;
     private final OutboxEventRepository outbox;
 
-    public ExpirySweeper(ApprovalRequestRepository requests, AuditLogRepository audits, OutboxEventRepository outbox) {
+    public ExpiryTransitionService(ApprovalRequestRepository requests, AuditLogRepository audits, OutboxEventRepository outbox) {
         this.requests = requests;
         this.audits = audits;
         this.outbox = outbox;
-    }
-
-    @Scheduled(fixedDelay = 60000)
-    public int sweepOnce() {
-        List<ApprovalRequest> candidates = requests.findByStateAndExpiresAtBefore(ApprovalState.PENDING_APPROVAL, Instant.now());
-        int expiredCount = 0;
-        for (ApprovalRequest candidate : candidates) {
-            if (expireOne(candidate.getRequestId(), candidate.getVersion())) {
-                expiredCount++;
-            }
-        }
-        return expiredCount;
     }
 
     // Each candidate goes through the SAME guarded update as every other transition —
@@ -2298,6 +2373,50 @@ public class ExpirySweeper {
         event.setCreatedAt(Instant.now());
         outbox.save(event);
         return true;
+    }
+}
+```
+
+`approval-engine/src/main/java/com/visionbank/approval/service/ExpirySweeper.java`:
+```java
+package com.visionbank.approval.service;
+
+import com.visionbank.approval.domain.ApprovalRequest;
+import com.visionbank.approval.domain.ApprovalState;
+import com.visionbank.approval.repository.ApprovalRequestRepository;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.List;
+
+@Service
+public class ExpirySweeper {
+
+    private final ApprovalRequestRepository requests;
+    private final ExpiryTransitionService transitionService;
+
+    public ExpirySweeper(ApprovalRequestRepository requests, ExpiryTransitionService transitionService) {
+        this.requests = requests;
+        this.transitionService = transitionService;
+    }
+
+    @Scheduled(fixedDelay = 60000)
+    public int sweepOnce() {
+        List<ApprovalRequest> candidates = requests.findByStateAndExpiresAtBefore(ApprovalState.PENDING_APPROVAL, Instant.now());
+        int expiredCount = 0;
+        for (ApprovalRequest candidate : candidates) {
+            if (transitionService.expireOne(candidate.getRequestId(), candidate.getVersion())) {
+                expiredCount++;
+            }
+        }
+        return expiredCount;
+    }
+
+    // Thin delegator so existing/prior test call sites (sweeper.expireOne(...))
+    // still exercise the real transactional bean rather than a self-invoked no-op.
+    public boolean expireOne(String requestId, long expectedVersion) {
+        return transitionService.expireOne(requestId, expectedVersion);
     }
 }
 ```
@@ -2918,6 +3037,13 @@ public class Transfer {
     @Column(name = "idempotency_key", nullable = false, unique = true)
     private String idempotencyKey;
 
+    // Persisted once at submission and reused on any retry (Task 13) — never
+    // recomputed with Instant.now() again, or a retry's engine call would
+    // carry a different expiresAt than the original, which the engine's
+    // idempotency hash would see as a body mismatch (spurious 409).
+    @Column(name = "expires_at", nullable = false)
+    private Instant expiresAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 }
@@ -3289,9 +3415,10 @@ git commit -m "feat(transfer-service): approval engine REST client"
 
 ---
 
-### Task 13: `TransferSubmissionService` — validation + idempotent submission + workflow creation
+### Task 13: `TransferSubmissionService` — validation + crash-safe two-phase submission + workflow creation
 
 **Files:**
+- Create: `transfer-service/src/main/java/com/visionbank/transfer/service/TransferPersistenceService.java`
 - Create: `transfer-service/src/main/java/com/visionbank/transfer/service/TransferSubmissionService.java`
 - Create: `transfer-service/src/main/java/com/visionbank/transfer/service/SubmitTransferCommand.java`
 - Create: `transfer-service/src/main/java/com/visionbank/transfer/service/TransferView.java`
@@ -3299,18 +3426,21 @@ git commit -m "feat(transfer-service): approval engine REST client"
 - Test: `transfer-service/src/test/java/com/visionbank/transfer/service/TransferSubmissionServiceTest.java`
 
 **Interfaces:**
-- Consumes: `TransferRepository` (Task 10), `CoreBankingClient` (Task 11), `PolicyResolver` (Task 10), `ApprovalEngineClient.createWorkflow` (Task 12).
-- Produces: `TransferSubmissionService.submit(SubmitTransferCommand cmd, String idempotencyKey) -> TransferView`; `SubmitTransferCommand(String makerId, String fromAccount, String toAccount, long amountMinorUnits, String currency)`; `TransferView(String transferId, TransferState state)`. Task 15 (controller) and Task 14 (event listener, via `TransferRepository`) consume `Transfer` rows this produces.
+- Consumes: `TransferRepository` (Task 10, `Transfer` now has `expiresAt`), `CoreBankingClient` (Task 11), `PolicyResolver` (Task 10), `ApprovalEngineClient.createWorkflow` (Task 12).
+- Produces: `TransferSubmissionService.submit(SubmitTransferCommand cmd, String idempotencyKey) -> TransferView`; `SubmitTransferCommand(String makerId, String fromAccount, String toAccount, long amountMinorUnits, String currency)`; `TransferView(String transferId, TransferState state)`; `TransferPersistenceService.persistCreated(...)`/`markWaitingForApproval(...)`. Task 15 (controller) and Task 14 (event listener, via `TransferRepository`) consume `Transfer` rows this produces.
 
-**Design note enforced by this task:** regardless of whether the engine's `createWorkflow` call returns `APPROVED` (auto-release, 0 required approvals) or `PENDING_APPROVAL`, the persisted `Transfer.state` is set to `WAITING_FOR_APPROVAL` and release is **never** triggered from this method. Release only ever happens in Task 14, driven by the `ApprovalApproved` event — this is what makes auto-release and N-approver release converge on one code path (spec §16, §20 "convergence").
+**Design notes enforced by this task (both from post-review fixes):**
+1. Regardless of whether the engine's `createWorkflow` call returns `APPROVED` (auto-release) or `PENDING_APPROVAL`, the persisted `Transfer.state` ends at `WAITING_FOR_APPROVAL` and release is **never** triggered here — release only ever happens in Task 14, driven by the `ApprovalApproved` event (spec §16, §20 "convergence").
+2. **The engine's HTTP call must never sit inside an open local DB transaction.** The original version wrapped the whole method in `@Transactional`, so a crash between the (already-committed-on-the-engine-side) HTTP call and the local commit stranded the transfer with no local record, *and* corrupted the stub's in-memory `seenDuplicateKeys` (already added on the doomed attempt), permanently blocking any retry of that idempotency key. Fixed by splitting into two commit points on `TransferPersistenceService` (a separate bean — same self-invocation reasoning as Tasks 7/8): persist `CREATED` first (validation happens once, before this), call the engine, then persist `WAITING_FOR_APPROVAL`. A retry with the same `Idempotency-Key` that lands after `CREATED` but before completion **resumes** using the *already-persisted* `transferId` and `expiresAt` — it does not re-validate (so the stub's one-shot duplicate check is never touched twice) and does not recompute `expiresAt` (recomputing it would change the engine's idempotency hash and turn a legitimate retry into a spurious `409 IDEMPOTENCY_CONFLICT`).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests, including the crash-resume case**
 
 `transfer-service/src/test/java/com/visionbank/transfer/service/TransferSubmissionServiceTest.java`:
 ```java
 package com.visionbank.transfer.service;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.visionbank.transfer.domain.Transfer;
 import com.visionbank.transfer.domain.TransferState;
 import com.visionbank.transfer.repository.TransferRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -3324,6 +3454,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Instant;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -3348,6 +3479,7 @@ class TransferSubmissionServiceTest {
     }
 
     @Autowired TransferSubmissionService service;
+    @Autowired TransferPersistenceService persistenceService;
     @Autowired TransferRepository transfers;
 
     @BeforeEach
@@ -3407,15 +3539,35 @@ class TransferSubmissionServiceTest {
         assertThat(second.transferId()).isEqualTo(first.transferId());
         engineStub.verify(1, postRequestedFor(urlEqualTo("/approvals")));
     }
+
+    @Test
+    void resumingAfterCrashReusesThePersistedTransferIdAndExpiresAtWithoutReValidating() {
+        // Simulates a crash after persistCreated() committed but before the
+        // engine call/markWaitingForApproval completed: pre-create the CREATED
+        // row directly via the persistence service, with a fixed expiresAt.
+        Instant fixedExpiresAt = Instant.parse("2030-01-01T00:00:00Z");
+        Transfer created = persistenceService.persistCreated("resume-1", smallTransfer(), "resume-key", fixedExpiresAt);
+        assertThat(created.getState()).isEqualTo(TransferState.CREATED);
+
+        engineStub.stubFor(post(urlEqualTo("/approvals"))
+                .willReturn(okJson("{\"requestId\":\"resume-1\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
+
+        TransferView view = service.submit(smallTransfer(), "resume-key");
+
+        assertThat(view.transferId()).isEqualTo("resume-1");
+        assertThat(transfers.findById("resume-1").get().getState()).isEqualTo(TransferState.WAITING_FOR_APPROVAL);
+        engineStub.verify(1, postRequestedFor(urlEqualTo("/approvals"))
+                .withRequestBody(containing("2030-01-01T00:00:00Z")));
+    }
 }
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd transfer-service && ./gradlew test --tests TransferSubmissionServiceTest`
-Expected: FAIL — `TransferSubmissionService` does not exist.
+Expected: FAIL — `TransferSubmissionService`/`TransferPersistenceService` do not exist.
 
-- [ ] **Step 3: Implement the DTOs and service**
+- [ ] **Step 3: Implement the DTOs and the two services**
 
 `transfer-service/src/main/java/com/visionbank/transfer/service/SubmitTransferCommand.java`:
 ```java
@@ -3444,6 +3596,60 @@ public class ValidationFailedException extends RuntimeException {
 }
 ```
 
+`transfer-service/src/main/java/com/visionbank/transfer/service/TransferPersistenceService.java`:
+```java
+package com.visionbank.transfer.service;
+
+import com.visionbank.transfer.domain.Transfer;
+import com.visionbank.transfer.domain.TransferState;
+import com.visionbank.transfer.repository.TransferRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Instant;
+
+/**
+ * Owns the two commit points TransferSubmissionService.submit() needs on
+ * either side of the (non-transactional) Approval Engine HTTP call. Kept on
+ * a separate bean rather than as methods called via `this.` on the
+ * submission service — same self-invocation reasoning as OutboxClaimService
+ * (Task 7) and ExpiryTransitionService (Task 8).
+ */
+@Service
+public class TransferPersistenceService {
+
+    private final TransferRepository transfers;
+
+    public TransferPersistenceService(TransferRepository transfers) {
+        this.transfers = transfers;
+    }
+
+    @Transactional
+    public Transfer persistCreated(String transferId, SubmitTransferCommand cmd, String idempotencyKey, Instant expiresAt) {
+        Transfer transfer = new Transfer();
+        transfer.setTransferId(transferId);
+        transfer.setMakerId(cmd.makerId());
+        transfer.setFromAccount(cmd.fromAccount());
+        transfer.setToAccount(cmd.toAccount());
+        transfer.setAmountMinorUnits(cmd.amountMinorUnits());
+        transfer.setCurrency(cmd.currency());
+        transfer.setState(TransferState.CREATED);
+        transfer.setIdempotencyKey(idempotencyKey);
+        transfer.setExpiresAt(expiresAt);
+        transfer.setCreatedAt(Instant.now());
+        return transfers.save(transfer);
+    }
+
+    @Transactional
+    public Transfer markWaitingForApproval(String transferId, String approvalRequestId) {
+        Transfer transfer = transfers.findById(transferId).orElseThrow();
+        transfer.setApprovalRequestId(approvalRequestId);
+        transfer.setState(TransferState.WAITING_FOR_APPROVAL);
+        return transfers.save(transfer);
+    }
+}
+```
+
 `transfer-service/src/main/java/com/visionbank/transfer/service/TransferSubmissionService.java`:
 ```java
 package com.visionbank.transfer.service;
@@ -3454,17 +3660,18 @@ import com.visionbank.transfer.approval.WorkflowResponse;
 import com.visionbank.transfer.corebanking.CoreBankingClient;
 import com.visionbank.transfer.corebanking.ValidationResult;
 import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.domain.TransferState;
 import com.visionbank.transfer.policy.ApprovalPolicy;
 import com.visionbank.transfer.policy.PolicyResolver;
 import com.visionbank.transfer.repository.TransferRepository;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
+// Deliberately NOT @Transactional — this method spans an external HTTP call
+// to the Approval Engine, which must never sit inside an open DB transaction.
+// TransferPersistenceService owns the two actual commit points.
 @Service
 public class TransferSubmissionService {
 
@@ -3472,21 +3679,26 @@ public class TransferSubmissionService {
     private final CoreBankingClient coreBanking;
     private final PolicyResolver policyResolver;
     private final ApprovalEngineClient approvalEngineClient;
+    private final TransferPersistenceService persistenceService;
 
     public TransferSubmissionService(TransferRepository transfers, CoreBankingClient coreBanking,
-                                      PolicyResolver policyResolver, ApprovalEngineClient approvalEngineClient) {
+                                      PolicyResolver policyResolver, ApprovalEngineClient approvalEngineClient,
+                                      TransferPersistenceService persistenceService) {
         this.transfers = transfers;
         this.coreBanking = coreBanking;
         this.policyResolver = policyResolver;
         this.approvalEngineClient = approvalEngineClient;
+        this.persistenceService = persistenceService;
     }
 
-    @Transactional
     public TransferView submit(SubmitTransferCommand cmd, String idempotencyKey) {
         Optional<Transfer> existing = transfers.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
             Transfer t = existing.get();
-            return new TransferView(t.getTransferId(), t.getState());
+            if (t.getApprovalRequestId() != null) {
+                return new TransferView(t.getTransferId(), t.getState()); // fully completed already
+            }
+            return completeWorkflowCreation(t, cmd); // resume: same transferId, same persisted expiresAt
         }
 
         ValidationResult validation = coreBanking.validate(cmd.fromAccount(), cmd.amountMinorUnits(), idempotencyKey);
@@ -3498,31 +3710,25 @@ public class TransferSubmissionService {
         }
 
         String transferId = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(86400);
+        Transfer created = persistenceService.persistCreated(transferId, cmd, idempotencyKey, expiresAt);
+
+        return completeWorkflowCreation(created, cmd);
+    }
+
+    private TransferView completeWorkflowCreation(Transfer transfer, SubmitTransferCommand cmd) {
         ApprovalPolicy policy = policyResolver.resolve(cmd.amountMinorUnits());
-
         CreateWorkflowRequest workflowRequest = new CreateWorkflowRequest(
-                transferId, "TRANSFER_APPROVAL", cmd.makerId(), policy,
-                "{\"transferId\":\"" + transferId + "\",\"amount\":" + cmd.amountMinorUnits() + "}",
-                Instant.now().plusSeconds(86400));
-        WorkflowResponse workflowResponse = approvalEngineClient.createWorkflow(workflowRequest, transferId);
+                transfer.getTransferId(), "TRANSFER_APPROVAL", cmd.makerId(), policy,
+                "{\"transferId\":\"" + transfer.getTransferId() + "\",\"amount\":" + cmd.amountMinorUnits() + "}",
+                transfer.getExpiresAt()); // persisted value — never recomputed on retry
+        WorkflowResponse workflowResponse = approvalEngineClient.createWorkflow(workflowRequest, transfer.getTransferId());
 
-        Transfer transfer = new Transfer();
-        transfer.setTransferId(transferId);
-        transfer.setMakerId(cmd.makerId());
-        transfer.setFromAccount(cmd.fromAccount());
-        transfer.setToAccount(cmd.toAccount());
-        transfer.setAmountMinorUnits(cmd.amountMinorUnits());
-        transfer.setCurrency(cmd.currency());
         // Always WAITING_FOR_APPROVAL here regardless of workflowResponse.state() —
         // release is only ever triggered by consuming ApprovalApproved (Task 14),
         // so auto-release and N-approver release share one trigger path.
-        transfer.setState(TransferState.WAITING_FOR_APPROVAL);
-        transfer.setApprovalRequestId(workflowResponse.requestId());
-        transfer.setIdempotencyKey(idempotencyKey);
-        transfer.setCreatedAt(Instant.now());
-        transfers.save(transfer);
-
-        return new TransferView(transferId, transfer.getState());
+        Transfer completed = persistenceService.markWaitingForApproval(transfer.getTransferId(), workflowResponse.requestId());
+        return new TransferView(completed.getTransferId(), completed.getState());
     }
 }
 ```
@@ -3530,13 +3736,13 @@ public class TransferSubmissionService {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd transfer-service && ./gradlew test --tests TransferSubmissionServiceTest`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add transfer-service/
-git commit -m "feat(transfer-service): idempotent transfer submission with one release trigger path"
+git commit -m "feat(transfer-service): crash-safe two-phase submission with reused expiresAt on resume"
 ```
 
 ---
@@ -3614,6 +3820,7 @@ class ApprovalEventListenerTest {
         t.setState(TransferState.WAITING_FOR_APPROVAL);
         t.setApprovalRequestId(approvalRequestId);
         t.setIdempotencyKey(UUID.randomUUID().toString());
+        t.setExpiresAt(Instant.now().plusSeconds(86400));
         t.setCreatedAt(Instant.now());
         return transfers.save(t);
     }
@@ -3819,6 +4026,7 @@ class ConvergenceTest {
         t.setState(TransferState.WAITING_FOR_APPROVAL);
         t.setApprovalRequestId(approvalRequestId);
         t.setIdempotencyKey(UUID.randomUUID().toString());
+        t.setExpiresAt(Instant.now().plusSeconds(86400));
         t.setCreatedAt(Instant.now());
         return transfers.save(t);
     }
@@ -4204,7 +4412,7 @@ services:
     build: ./approval-engine
     ports: ["8081:8081"]
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-approval:5432/approval
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-approval:5432/approval?stringtype=unspecified
       SPRING_DATASOURCE_USERNAME: approval
       SPRING_DATASOURCE_PASSWORD: approval
       TRANSFER-SERVICE_WEBHOOK-URL: http://transfer-service:8080/internal/events
@@ -4352,6 +4560,11 @@ cd transfer-service && ./gradlew test
 
 ## What I'd do differently with more time
 
+- A funds hold at submission (`CoreBankingClient.hold(...)`), consumed on
+  release and freed on reject/cancel/expire — without it, two large
+  concurrent transfers against the same account can each pass validation
+  independently and both later release, overspending the real balance.
+  Named here deliberately rather than silently omitted.
 - Flyway migrations instead of `ddl-auto: update`.
 - A retry scheduler polling `RELEASE_PENDING` transfers for core-banking
   failures (the state exists; the poller doesn't, since the stub never fails).
@@ -4392,8 +4605,9 @@ Structure (spec section references in parens):
 - **Context/deployment diagram** — logical-diagram-dominant per fix #1 above. Consumers (corporate banking users) → Transfer Service → Approval Engine, with Core Banking as a stubbed dependency behind `CoreBankingClient` (spec §4), sync REST arrows and async outbox-relay arrows both shown (spec §5).
 - **Ownership table** (spec §4).
 - **Communication + failure behavior table** (spec §5) — the four flows and what happens if the other side is down.
-- **Consistency statement**: "Strong/transactional within each service; eventually consistent across the boundary — no distributed transaction. The outbox is the seam that makes partial failure safe."
+- **Consistency statement**: "Strong/transactional within each service; eventually consistent across the boundary — no distributed transaction. The outbox is the seam that makes partial failure safe." Add the one-sentence asymmetric-resilience note from spec §5 here too — it's cheap and it's exactly the kind of NFR precision the HLD rubric line rewards.
 - **NFRs**: idempotency (spec §11), concurrency (spec §12, one sentence pointing at the LLD page for the mechanism), partial failure (spec §17).
+- **Named gap**: one sentence on the funds-hold gap (spec §5/§21) — state it, don't let a reviewer find it first. This belongs in the trade-offs/out-of-scope area, not buried.
 - **Trade-offs** (compact, spec §7 declarative definition, §17 outbox-vs-broker, §4 Core-Banking-as-stub, spec §1 seams-not-machinery) — 3-4 one-line bullets, "chose X over Y because Z" format.
 - **Extensibility (not built)** — 3-4 sentences on the three seams (spec §7-9), explicitly labeled not-built.
 - **Assumptions / out of scope** (spec §21) — compact two-column list.
@@ -4440,4 +4654,12 @@ git commit -m "docs: submission HLD/LLD within the 4-page budget"
 2. *Release idempotency contract* — `CoreBankingClient.release` (Task 11) now documents its idempotent-by-`transferId` contract explicitly; the stub already implemented it, this made the guarantee visible rather than incidental.
 3. *Unused `idempotencyKey` on approve/reject/cancel* — removed from `ApprovalCommandService` (Task 5), its tests (Tasks 5, 6, 8), and `ApprovalController` (Task 9); decision-level idempotency now rests entirely on Task 3's `UNIQUE(request_id, actor_id)` constraint, documented in spec §11.
 4. *Weak YAML validation* — `YamlWorkflowLoader.validate()` (Task 1) now checks `initialState` is declared and transition names are unique, plus a negative-path test proving a malformed definition fails fast; guard-name validation against the live `GuardRegistry` moved to `WorkflowConfig` (Task 4, new `WorkflowConfigTest`) since that's the first point both beans exist.
+
+**Round 2 post-review fixes (four more issues, all verified against the actual code before fixing, not taken on faith):**
+1. *Quorum undercounting race* — CONFIRMED by tracing the transaction interleaving: with `required=2`, two concurrent `approve()` calls under READ COMMITTED can each count only their own decision (the other's insert isn't committed yet), both see quorum unmet, and the request gets stuck in `PENDING_APPROVAL` with two decisions and no transition — Task 6 previously only tested `required=1`, where a single decision always self-satisfies quorum, so this never surfaced. Fixed with a `SELECT ... FOR UPDATE` row lock (`ApprovalRequestRepository.findByRequestIdForUpdate`, Task 3) taken at the top of `approve`/`reject`/`cancel` (Task 5's `loadOrThrow`), serializing quorum counting on the same request. This is a deliberate, documented exception to the "no explicit row locks" global constraint — the guarded UPDATE alone only ever protected the transition *attempt*, not the *decision* to attempt one. New regression test in Task 6.
+2. *Self-invocation silently disabling `@Transactional`* — CONFIRMED as a real defect, and ironic: `OutboxRelay.relayOnce()` called `this.claimBatch()`/`this.markPublished()`, and `ExpirySweeper.sweepOnce()` called `this.expireOne()`; Spring's proxy-based AOP never intercepts self-invocation, so those `@Transactional` annotations were silent no-ops. Concretely, this meant the `FOR UPDATE SKIP LOCKED` claim lock from Round 1's outbox fix was released the instant the SELECT returned — before `markClaimed` ran — fully defeating that fix. Resolved by extracting `OutboxClaimService` (Task 7) and `ExpiryTransitionService` (Task 8) as separate beans, called through their real proxies.
+3. *No funds hold* — CONFIRMED as a real banking-correctness gap (double-spend across concurrent pending transfers). Documented explicitly rather than built, given the time budget — see spec §5/§21 and the README's "what I'd do differently."
+4. *`submit()`'s open transaction spanning the engine HTTP call* — CONFIRMED, and worse on inspection than first flagged: a crash between the engine call succeeding and the local commit both stranded the transfer *and* permanently corrupted the stub's in-memory duplicate-key set, blocking all future retries of that idempotency key — and because `transferId` was freshly minted inside `submit()` on every call, an unprotected retry wouldn't even hit the engine's idempotency check, it would silently create a second workflow. Fixed by splitting into `TransferPersistenceService` (Task 13, a separate bean for the same self-invocation reason as #2) with two commit points around the engine call, and a resume path that reuses the *persisted* `transferId` and `expiresAt` on retry rather than recomputing either — recomputing `expiresAt` specifically would have changed the engine's idempotency hash and turned a legitimate retry into a spurious `409 IDEMPOTENCY_CONFLICT`, a bug in the fix that was caught before being written. `Transfer` gained a persisted `expiresAt` column (Task 10) to support this; Task 14's test helpers updated to set it (now `NOT NULL`).
+
+Also applied: `?stringtype=unspecified` on the approval-engine JDBC URL (Task 1, Task 16) — several columns are `jsonb` fed by a plain Java `String` (via converter or direct field), which the Postgres JDBC driver would otherwise bind as `varchar` and Postgres would reject.
 

@@ -75,6 +75,28 @@ Consistency model: strong/transactional within each service; **eventually
 consistent across the boundary** — no distributed transaction. The outbox
 is the seam that makes partial failure safe.
 
+**Resilience is deliberately asymmetric between the two directions**, worth
+stating explicitly rather than leaving implicit in the table above: Engine
+being unavailable breaks `submit()` synchronously (it's a blocking REST
+call on the critical path); Transfer being unavailable does **not** break
+approve/reject/cancel (the engine's own state machine and audit trail don't
+depend on Transfer being reachable — only outbox delivery does, and that's
+async and retried). This asymmetry is intentional, not an oversight: the
+engine's correctness never depends on Transfer's availability.
+
+**Known gap, not built — no funds hold between validation and release.**
+Balance is checked once at submission; nothing reserves funds until
+release actually happens. Two large concurrent transfers against the same
+account can each pass validation independently and both later release,
+overspending the real balance — a real double-spend risk in a system this
+otherwise careful about races. The correct fix: `CoreBankingClient` would
+need a `hold(fromAccount, amount, transferId)` call made at submission
+(before persisting), consumed on release and explicitly freed on
+`ApprovalRejected`/`ApprovalCancelled`/`ApprovalExpired`. Not implemented
+here — it's a second stateful protocol with core banking beyond what the
+30-hour budget covers, but it's the one gap in this design that a senior
+banking reviewer should not have to find themselves.
+
 ## 6. State machines (two, deliberately separate)
 
 **Approval Engine (generic):**
@@ -295,7 +317,9 @@ Controller tests are lowest priority.
 
 Real broker, real core banking, real auth, UI, multi-region,
 multi-currency, delegation, dynamic workflow/policy config, tenant
-registry, second tenant, BPMN/Temporal/Camunda.
+registry, second tenant, BPMN/Temporal/Camunda, **a funds hold/reservation
+between validation and release (§5) — the one named banking-correctness
+gap in this design, not a silent omission.**
 
 ## 22. Build order
 
