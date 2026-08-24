@@ -116,6 +116,13 @@ Domain rules (`amount > threshold`, `balance >= amount`) are forbidden
 inside engine guards — a domain rule in a guard collapses the
 generic-engine boundary.
 
+Startup validation (fail fast, not mid-request): every transition's
+`from`/`to` are declared states; `initialState` is a declared state;
+transition names are unique; every transition's `guard` name resolves
+in the `GuardRegistry` — the registry already throws on an unknown name
+(§12's guard lookup), so this validation is just calling that lookup
+once for every transition at wiring time instead of only on first use.
+
 ## 8. Policy resolution & snapshot (seam #2)
 
 Resolved inside Transfer Domain at submission time
@@ -140,16 +147,27 @@ a command-level constraint, not a workflow shape.
 
 ## 11. Idempotency (split ownership)
 
-| Operation | Owner |
-|---|---|
-| Transfer submission (client `Idempotency-Key`) | Transfer |
-| Workflow create + approve/reject/cancel commands | Engine |
-| Core-banking release | Transfer |
+| Operation | Owner | Mechanism |
+|---|---|---|
+| Transfer submission (client `Idempotency-Key`) | Transfer | stored key → replayed result, conflict on body mismatch |
+| Workflow create (client `Idempotency-Key`) | Engine | stored key → replayed result, conflict on body mismatch |
+| approve/reject/cancel decisions | Engine | `UNIQUE(request_id, actor_id)` — a decision is naturally idempotent per actor; retrying with the same actor on an already-decided request replays the existing state rather than double-counting |
+| Core-banking release | Transfer | `CoreBankingClient.release` is idempotent keyed on `transferId` — a redelivered `ApprovalApproved` event never moves money twice |
 
-Replay with same key + different body → `409 IDEMPOTENCY_CONFLICT`;
-matching replay returns the stored result. The engine does not and
-cannot guarantee business-operation (money movement) idempotency — that
-belongs to Transfer, keyed on request ID.
+Replay of `create` with same key + different body → `409
+IDEMPOTENCY_CONFLICT`; matching replay returns the stored result. The
+engine does not and cannot guarantee business-operation (money
+movement) idempotency — that belongs to Transfer, keyed on request ID.
+
+**Why `approve`/`reject`/`cancel` don't take a client idempotency key:**
+a workflow *decision* is a fact about one actor's action on one request
+— the `(request_id, actor_id)` uniqueness constraint already makes
+retrying the same actor's decision a no-op (it re-reads and returns
+current state instead of double-inserting). A generic idempotency-key
+store for these three commands would duplicate that guarantee with a
+second mechanism. `create` is different: it's the one command that
+*originates* a request, so a lost-response retry must not spawn a
+second workflow — that's what the client-supplied key is for.
 
 ## 12. Concurrency — one mechanism for every race
 
@@ -216,6 +234,18 @@ polling relay publishes; at-least-once delivery. Every event carries
 No broker — an in-DB outbox is right-sized for corporate transfer
 volume; if throughput or org boundaries later demand one, the outbox
 remains the durable publish boundary underneath it.
+
+The relay claims a batch via `SELECT ... FOR UPDATE SKIP LOCKED` and
+marks those rows `claimed_at` in one short transaction (no HTTP call
+inside it), then publishes and marks `published_at` outside that
+transaction. This is what makes it safe to run more than one relay
+instance without both delivering the same event on every pass — not
+required for this exercise (one instance each), but a one-line query
+change rather than a new subsystem, so it's cheap enough to do
+correctly now instead of asserting it without building it. A claim
+older than 30s with `published_at` still null is treated as stale and
+re-claimable (crash recovery); redelivery from either case is still
+just at-least-once, which `processed_event` already handles.
 
 ## 18. Data model
 
