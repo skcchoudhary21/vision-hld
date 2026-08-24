@@ -247,7 +247,32 @@ class WorkflowLoaderTest {
         assertThat(def.byName("approve").guard()).isEqualTo("approvals_satisfied");
         assertThat(def.byName("approve").to()).isEqualTo(ApprovalState.APPROVED);
     }
+
+    @Test
+    void loadingDefinitionWithDuplicateTransitionNamesFailsFast() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> new YamlWorkflowLoader().load("workflow/invalid-duplicate-transition.yaml"));
+    }
 }
+```
+
+Also create the malformed fixture this last test loads:
+
+`approval-engine/src/test/resources/workflow/invalid-duplicate-transition.yaml`:
+```yaml
+name: broken
+version: 1
+states: [SUBMITTED, APPROVED]
+initialState: SUBMITTED
+transitions:
+  - name: approve
+    from: SUBMITTED
+    to: APPROVED
+    guard: no_approval_required
+  - name: approve
+    from: SUBMITTED
+    to: APPROVED
+    guard: approval_required
 ```
 
 - [ ] **Step 4: Run test to verify it fails**
@@ -314,11 +339,20 @@ public class YamlWorkflowLoader implements WorkflowLoader {
     }
 
     private void validate(WorkflowDefinition def) {
+        if (!def.states().contains(def.initialState())) {
+            throw new IllegalStateException("initialState " + def.initialState() + " is not declared in states[]");
+        }
+        java.util.Set<String> seenNames = new java.util.HashSet<>();
         for (Transition t : def.transitions()) {
             if (!def.states().contains(t.from()) || !def.states().contains(t.to())) {
                 throw new IllegalStateException("Transition " + t.name() + " references a state not in states[]");
             }
+            if (!seenNames.add(t.name())) {
+                throw new IllegalStateException("Duplicate transition name: " + t.name());
+            }
         }
+        // Guard names are validated separately in WorkflowConfig (Task 4), once the
+        // GuardRegistry bean exists — this loader has no dependency on it.
     }
 }
 ```
@@ -354,7 +388,7 @@ If you use the fallback, add one line to the README trade-offs section: *"Workfl
 - [ ] **Step 6: Run test to verify it passes**
 
 Run: `cd approval-engine && ./gradlew test --tests WorkflowLoaderTest`
-Expected: PASS (3 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 7: Commit**
 
@@ -886,6 +920,9 @@ public class OutboxEvent {
 
     @Column(name = "published_at")
     private Instant publishedAt;
+
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
 }
 ```
 
@@ -994,11 +1031,32 @@ package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.OutboxEvent;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 
 public interface OutboxEventRepository extends JpaRepository<OutboxEvent, String> {
+
     List<OutboxEvent> findByPublishedAtIsNullOrderByCreatedAtAsc();
+
+    /**
+     * Locks and returns the ids of a batch of unpublished, unclaimed (or
+     * stale-claimed) events, skipping any row a concurrent relay instance
+     * already has locked. Must be called inside the same short transaction
+     * as markClaimed below — no HTTP call between them.
+     */
+    @Query(value = "SELECT event_id FROM outbox " +
+                    "WHERE published_at IS NULL AND (claimed_at IS NULL OR claimed_at < :staleBefore) " +
+                    "ORDER BY created_at ASC LIMIT :batchSize FOR UPDATE SKIP LOCKED",
+           nativeQuery = true)
+    List<String> selectAndLockUnpublishedIds(@Param("staleBefore") Instant staleBefore, @Param("batchSize") int batchSize);
+
+    @Modifying
+    @Query("UPDATE OutboxEvent o SET o.claimedAt = :now WHERE o.eventId IN :ids")
+    void markClaimed(@Param("ids") List<String> ids, @Param("now") Instant now);
 }
 ```
 
@@ -1306,7 +1364,7 @@ public class ApprovalCommandService {
 }
 ```
 
-Also register the loaded `WorkflowDefinition` as a bean so it can be injected:
+Also register the loaded `WorkflowDefinition` as a bean so it can be injected. This is also where the guard-name validation from spec §7 belongs — `YamlWorkflowLoader` has no dependency on `GuardRegistry`, but this config class depends on both, so it's the first point where a transition's `guard` name can be checked against what's actually registered:
 
 `approval-engine/src/main/java/com/visionbank/approval/workflow/WorkflowConfig.java`:
 ```java
@@ -1320,8 +1378,39 @@ import org.springframework.context.annotation.Configuration;
 public class WorkflowConfig {
 
     @Bean
-    public WorkflowDefinition workflowDefinition(@Value("${workflow.definition-path}") String path) {
-        return new YamlWorkflowLoader().load(path);
+    public WorkflowDefinition workflowDefinition(@Value("${workflow.definition-path}") String path,
+                                                   GuardRegistry guards) {
+        WorkflowDefinition definition = new YamlWorkflowLoader().load(path);
+        // GuardRegistry.get() already throws IllegalStateException on an unknown
+        // name (Task 2) — calling it here for every transition turns "guard:
+        // approval_satsified" (typo) into a startup failure instead of a
+        // first-request failure.
+        definition.transitions().forEach(t -> guards.get(t.guard()));
+        return definition;
+    }
+}
+```
+
+Add one test to prove this fires: append to `approval-engine/src/test/java/com/visionbank/approval/workflow/StandardGuardsTest.java`'s test list is not appropriate (that class doesn't load YAML) — instead add a small standalone test:
+
+`approval-engine/src/test/java/com/visionbank/approval/workflow/WorkflowConfigTest.java`:
+```java
+package com.visionbank.approval.workflow;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class WorkflowConfigTest {
+
+    @Test
+    void unknownGuardNameFailsAtWiringTimeNotAtFirstUse() {
+        WorkflowConfig config = new WorkflowConfig();
+        GuardRegistry emptyRegistry = new GuardRegistry(); // no guards registered
+
+        assertThatThrownBy(() -> config.workflowDefinition("workflow/transfer-approval.yaml", emptyRegistry))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("No guard registered");
     }
 }
 ```
@@ -1352,7 +1441,7 @@ git commit -m "feat(approval-engine): idempotent create command with initial tra
 
 **Interfaces:**
 - Consumes: everything from Task 4's `ApprovalCommandService`, plus `ApprovalDecisionRepository.existsByRequestIdAndActorId` / `countByRequestIdAndDecision` (Task 3).
-- Produces: `ApprovalCommandService.approve(String requestId, String actorId, String actorRole, String idempotencyKey) -> ApprovalRequestView`; same signature shape for `reject`/`cancel`. `ConcurrentStateChangeException(String requestId, ApprovalState currentState)`; `InvalidStateTransitionException(String requestId, ApprovalState currentState, String requestedAction)`. Task 9 (controller) maps these two exceptions to the two 409 bodies from spec §19.
+- Produces: `ApprovalCommandService.approve(String requestId, String actorId, String actorRole) -> ApprovalRequestView`; `reject(String requestId, String actorId, String actorRole) -> ApprovalRequestView`; `cancel(String requestId, String actorId) -> ApprovalRequestView`. No `idempotencyKey` parameter on these three (spec §11): a decision is naturally idempotent per `(request_id, actor_id)` via Task 3's unique constraint — retrying the same actor's decision replays current state instead of double-counting, so a second dedup mechanism here would be redundant. `create` keeps its client `idempotencyKey` since it's the command that originates a request. `ConcurrentStateChangeException(String requestId, ApprovalState currentState)`; `InvalidStateTransitionException(String requestId, ApprovalState currentState, String requestedAction)`. Task 9 (controller) maps these two exceptions to the two 409 bodies from spec §19.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1406,7 +1495,7 @@ class ApprovalCommandServiceApproveTest {
     void singleApprovalOnRequiredOneTransitionsToApproved() {
         String id = createPending("req-single", 1);
 
-        ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+        ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
         assertThat(view.state()).isEqualTo(ApprovalState.APPROVED);
     }
@@ -1415,7 +1504,7 @@ class ApprovalCommandServiceApproveTest {
     void firstOfTwoRequiredApprovalsRecordsWithoutTransitioning() {
         String id = createPending("req-quorum", 2);
 
-        ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+        ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
         assertThat(view.state()).isEqualTo(ApprovalState.PENDING_APPROVAL);
     }
@@ -1423,9 +1512,9 @@ class ApprovalCommandServiceApproveTest {
     @Test
     void secondOfTwoRequiredApprovalsTransitionsToApproved() {
         String id = createPending("req-quorum-2", 2);
-        service.approve(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+        service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
-        ApprovalRequestView view = service.approve(id, "checker-2", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+        ApprovalRequestView view = service.approve(id, "checker-2", "TRANSFER_CHECKER");
 
         assertThat(view.state()).isEqualTo(ApprovalState.APPROVED);
     }
@@ -1434,7 +1523,7 @@ class ApprovalCommandServiceApproveTest {
     void makerCannotApproveOwnRequest() {
         String id = createPending("req-maker", 1);
 
-        assertThatThrownBy(() -> service.approve(id, "maker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString()))
+        assertThatThrownBy(() -> service.approve(id, "maker-1", "TRANSFER_CHECKER"))
                 .isInstanceOf(ForbiddenActionException.class);
     }
 
@@ -1442,16 +1531,16 @@ class ApprovalCommandServiceApproveTest {
     void ineligibleRoleCannotApprove() {
         String id = createPending("req-role", 1);
 
-        assertThatThrownBy(() -> service.approve(id, "auditor-1", "AUDITOR", UUID.randomUUID().toString()))
+        assertThatThrownBy(() -> service.approve(id, "auditor-1", "AUDITOR"))
                 .isInstanceOf(ForbiddenActionException.class);
     }
 
     @Test
     void approvingAlreadyTerminalRequestThrowsConcurrentStateChange() {
         String id = createPending("req-terminal", 1);
-        service.cancel(id, "maker-1", UUID.randomUUID().toString());
+        service.cancel(id, "maker-1");
 
-        assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString()))
+        assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER"))
                 .isInstanceOf(ConcurrentStateChangeException.class);
     }
 
@@ -1459,7 +1548,7 @@ class ApprovalCommandServiceApproveTest {
     void approvingAutoApprovedRequestThrowsInvalidStateTransition() {
         String id = createPending("req-auto", 0);
 
-        assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString()))
+        assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER"))
                 .isInstanceOf(InvalidStateTransitionException.class);
     }
 
@@ -1467,7 +1556,7 @@ class ApprovalCommandServiceApproveTest {
     void rejectTransitionsPendingToRejected() {
         String id = createPending("req-reject", 1);
 
-        ApprovalRequestView view = service.reject(id, "checker-1", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+        ApprovalRequestView view = service.reject(id, "checker-1", "TRANSFER_CHECKER");
 
         assertThat(view.state()).isEqualTo(ApprovalState.REJECTED);
     }
@@ -1476,7 +1565,7 @@ class ApprovalCommandServiceApproveTest {
     void cancelTransitionsPendingToCancelled() {
         String id = createPending("req-cancel", 1);
 
-        ApprovalRequestView view = service.cancel(id, "maker-1", UUID.randomUUID().toString());
+        ApprovalRequestView view = service.cancel(id, "maker-1");
 
         assertThat(view.state()).isEqualTo(ApprovalState.CANCELLED);
     }
@@ -1556,7 +1645,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
 
 ```java
     @Transactional
-    public ApprovalRequestView approve(String requestId, String actorId, String actorRole, String idempotencyKey) {
+    public ApprovalRequestView approve(String requestId, String actorId, String actorRole) {
         ApprovalRequest request = loadOrThrow(requestId);
 
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
@@ -1605,7 +1694,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
     }
 
     @Transactional
-    public ApprovalRequestView reject(String requestId, String actorId, String actorRole, String idempotencyKey) {
+    public ApprovalRequestView reject(String requestId, String actorId, String actorRole) {
         ApprovalRequest request = loadOrThrow(requestId);
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
             throw classifyRaceOrIllegal(requestId, request.getState(), "reject");
@@ -1626,7 +1715,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
     }
 
     @Transactional
-    public ApprovalRequestView cancel(String requestId, String actorId, String idempotencyKey) {
+    public ApprovalRequestView cancel(String requestId, String actorId) {
         ApprovalRequest request = loadOrThrow(requestId);
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
             throw classifyRaceOrIllegal(requestId, request.getState(), "cancel");
@@ -1749,9 +1838,9 @@ class ApprovalConcurrencyTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
 
         Callable<Object> checkerA = raceTask(startGate, () ->
-                service.approve(id, "checker-A", "TRANSFER_CHECKER", UUID.randomUUID().toString()));
+                service.approve(id, "checker-A", "TRANSFER_CHECKER"));
         Callable<Object> checkerB = raceTask(startGate, () ->
-                service.approve(id, "checker-B", "TRANSFER_CHECKER", UUID.randomUUID().toString()));
+                service.approve(id, "checker-B", "TRANSFER_CHECKER"));
 
         Future<Object> futureA = pool.submit(checkerA);
         Future<Object> futureB = pool.submit(checkerB);
@@ -1776,9 +1865,9 @@ class ApprovalConcurrencyTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
 
         Callable<Object> makerCancel = raceTask(startGate, () ->
-                service.cancel(id, "maker-1", UUID.randomUUID().toString()));
+                service.cancel(id, "maker-1"));
         Callable<Object> checkerApprove = raceTask(startGate, () ->
-                service.approve(id, "checker-A", "TRANSFER_CHECKER", UUID.randomUUID().toString()));
+                service.approve(id, "checker-A", "TRANSFER_CHECKER"));
 
         Future<Object> futureCancel = pool.submit(makerCancel);
         Future<Object> futureApprove = pool.submit(checkerApprove);
@@ -1834,8 +1923,8 @@ git commit -m "test(approval-engine): verify concurrent approval races resolve t
 - Test: `approval-engine/src/test/java/com/visionbank/approval/service/OutboxRelayTest.java`
 
 **Interfaces:**
-- Consumes: `OutboxEventRepository` (Task 3); property `transfer-service.webhook-url` (Task 1 `application.yml`).
-- Produces: `OutboxRelay.relayOnce() -> int` (count of events published this pass) — called on a `@Scheduled` fixed delay in production, called directly in tests for determinism.
+- Consumes: `OutboxEventRepository.selectAndLockUnpublishedIds`/`markClaimed` (Task 3, updated above); property `transfer-service.webhook-url` (Task 1 `application.yml`).
+- Produces: `OutboxRelay.relayOnce() -> int` (count of events published this pass) — called on a `@Scheduled` fixed delay in production, called directly in tests for determinism. Internally claims a batch (`FOR UPDATE SKIP LOCKED`, no HTTP call under the lock) before publishing, so concurrent relay instances never double-send the same row in the same pass — redelivery can still happen across passes (crash after publish, before `markPublished`), which `processed_event` on the consumer already handles.
 
 - [ ] **Step 1: Write the failing test using WireMock as the Transfer-side stand-in**
 
@@ -1951,8 +2040,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClient;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -1960,6 +2051,8 @@ import java.util.List;
 public class OutboxRelay {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
+    private static final Duration STALE_CLAIM_AFTER = Duration.ofSeconds(30);
+    private static final int BATCH_SIZE = 50;
 
     private final OutboxEventRepository outbox;
     private final RestClient restClient;
@@ -1974,16 +2067,40 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelay = 2000)
     public int relayOnce() {
-        List<OutboxEvent> pending = outbox.findByPublishedAtIsNullOrderByCreatedAtAsc();
+        List<OutboxEvent> claimed = claimBatch();
         int published = 0;
-        for (OutboxEvent event : pending) {
+        for (OutboxEvent event : claimed) {
             if (publish(event)) {
-                event.setPublishedAt(Instant.now());
-                outbox.save(event);
+                markPublished(event.getEventId());
                 published++;
             }
+            // On failure, claimedAt stays set — it becomes reclaimable once
+            // it's older than STALE_CLAIM_AFTER, so a crash mid-publish
+            // doesn't strand the event forever.
         }
         return published;
+    }
+
+    // Locks, claims, and releases the row lock within one short transaction —
+    // no HTTP call happens while any row is locked. Safe for more than one
+    // relay instance to run this concurrently: FOR UPDATE SKIP LOCKED means
+    // two instances never claim the same row in the same pass.
+    @Transactional
+    List<OutboxEvent> claimBatch() {
+        List<String> ids = outbox.selectAndLockUnpublishedIds(Instant.now().minus(STALE_CLAIM_AFTER), BATCH_SIZE);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        outbox.markClaimed(ids, Instant.now());
+        return outbox.findAllById(ids);
+    }
+
+    @Transactional
+    void markPublished(String eventId) {
+        outbox.findById(eventId).ifPresent(e -> {
+            e.setPublishedAt(Instant.now());
+            outbox.save(e);
+        });
     }
 
     private boolean publish(OutboxEvent event) {
@@ -2257,7 +2374,7 @@ class ExpiryVersusApproveConcurrencyTest {
         Future<Object> approveResult = pool.submit(() -> {
             startGate.await();
             try {
-                return service.approve("race-expire", "checker-A", "TRANSFER_CHECKER", UUID.randomUUID().toString());
+                return service.approve("race-expire", "checker-A", "TRANSFER_CHECKER");
             } catch (ConcurrentStateChangeException e) {
                 return e;
             }
@@ -2278,7 +2395,7 @@ class ExpiryVersusApproveConcurrencyTest {
 ```
 
 Run: `cd approval-engine && ./gradlew test --tests ExpiryVersusApproveConcurrencyTest`
-Expected: PASS (1 test). Add `import java.util.UUID;` alongside the other imports if your IDE doesn't auto-resolve it.
+Expected: PASS (1 test).
 
 - [ ] **Step 6: Commit**
 
@@ -2301,8 +2418,8 @@ git commit -m "feat(approval-engine): expiry sweeper on the guarded per-row tran
 - Test: `approval-engine/src/test/java/com/visionbank/approval/web/ApprovalControllerTest.java`
 
 **Interfaces:**
-- Consumes: `ApprovalCommandService` (Tasks 4-5), `ConcurrentStateChangeException`/`InvalidStateTransitionException`/`ForbiddenActionException`/`ApprovalRequestNotFoundException`/`IdempotencyConflictException` (Tasks 4-5).
-- Produces: `POST /approvals` (create), `POST /approvals/{id}/approve|reject|cancel`, `GET /approvals/{id}` — this is the public contract Transfer Service's `ApprovalEngineClient` (Task 15) is written against.
+- Consumes: `ApprovalCommandService` (Tasks 4-5, `approve`/`reject`/`cancel` now take no `idempotencyKey`), `ConcurrentStateChangeException`/`InvalidStateTransitionException`/`ForbiddenActionException`/`ApprovalRequestNotFoundException`/`IdempotencyConflictException` (Tasks 4-5).
+- Produces: `POST /approvals` (create, requires `Idempotency-Key`), `POST /approvals/{id}/approve|reject|cancel` (no `Idempotency-Key` header — decision-level idempotency per spec §11), `GET /approvals/{id}` — this is the public contract Transfer Service's `ApprovalEngineClient` (Task 15) is written against.
 
 - [ ] **Step 1: Write the DTOs and the failing controller test (happy path + one 409 per spec §19)**
 
@@ -2420,12 +2537,10 @@ class ApprovalControllerTest {
                 .content(createDto("ctrl-2", 1)));
 
         mockMvc.perform(post("/approvals/ctrl-2/approve")
-                .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType("application/json")
                 .content(mapper.writeValueAsString(new com.visionbank.approval.web.dto.ActorCommandDto("checker-1", "TRANSFER_CHECKER"))));
 
         mockMvc.perform(post("/approvals/ctrl-2/approve")
-                        .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType("application/json")
                         .content(mapper.writeValueAsString(new com.visionbank.approval.web.dto.ActorCommandDto("checker-2", "TRANSFER_CHECKER"))))
                 .andExpect(status().isConflict())
@@ -2471,27 +2586,29 @@ public class ApprovalController {
         return new ApprovalResponseDto(view.requestId(), view.state(), view.version());
     }
 
+    // No Idempotency-Key header on approve/reject/cancel — decisions are
+    // naturally idempotent per (request_id, actor_id) via Task 3's unique
+    // constraint (spec §11). Only create() originates a request and needs
+    // client-supplied replay protection.
+
     @PostMapping("/{id}/approve")
     public ApprovalResponseDto approve(@PathVariable String id,
-                                        @RequestHeader("Idempotency-Key") String idempotencyKey,
                                         @Valid @RequestBody ActorCommandDto dto) {
-        ApprovalRequestView view = service.approve(id, dto.actorId(), dto.actorRole(), idempotencyKey);
+        ApprovalRequestView view = service.approve(id, dto.actorId(), dto.actorRole());
         return new ApprovalResponseDto(view.requestId(), view.state(), view.version());
     }
 
     @PostMapping("/{id}/reject")
     public ApprovalResponseDto reject(@PathVariable String id,
-                                       @RequestHeader("Idempotency-Key") String idempotencyKey,
                                        @Valid @RequestBody ActorCommandDto dto) {
-        ApprovalRequestView view = service.reject(id, dto.actorId(), dto.actorRole(), idempotencyKey);
+        ApprovalRequestView view = service.reject(id, dto.actorId(), dto.actorRole());
         return new ApprovalResponseDto(view.requestId(), view.state(), view.version());
     }
 
     @PostMapping("/{id}/cancel")
     public ApprovalResponseDto cancel(@PathVariable String id,
-                                       @RequestHeader("Idempotency-Key") String idempotencyKey,
                                        @Valid @RequestBody ActorCommandDto dto) {
-        ApprovalRequestView view = service.cancel(id, dto.actorId(), idempotencyKey);
+        ApprovalRequestView view = service.cancel(id, dto.actorId());
         return new ApprovalResponseDto(view.requestId(), view.state(), view.version());
     }
 }
@@ -2953,6 +3070,13 @@ package com.visionbank.transfer.corebanking;
 
 public interface CoreBankingClient {
     ValidationResult validate(String fromAccount, long amountMinorUnits, String duplicateKey);
+
+    /**
+     * Idempotent by transferId: a redelivered ApprovalApproved event, or a
+     * retry after a lost response, must never move money twice for the same
+     * transferId. This is a core-banking contract, not a Transfer Service
+     * concern — ReleaseService relies on it without re-implementing dedup.
+     */
     boolean release(String transferId, String fromAccount, long amountMinorUnits);
 }
 ```
@@ -2992,6 +3116,8 @@ public class StubCoreBankingClient implements CoreBankingClient {
 
     @Override
     public synchronized boolean release(String transferId, String fromAccount, long amountMinorUnits) {
+        // Fulfills the interface's idempotent-by-transferId contract: a second
+        // call for a transferId already released is a no-op, not a second movement.
         releaseCounts.computeIfAbsent(transferId, id -> new AtomicInteger(0)).compareAndSet(0, 1);
         return true;
     }
@@ -4303,9 +4429,15 @@ git commit -m "docs: submission HLD/LLD within the 4-page budget"
 
 ## Plan Self-Review
 
-**Spec coverage:** §1-4 (thesis, stack, repo, ownership) → Tasks 1, 3, 10. §5 (comm/failure) → Tasks 7, 12, 13, 14, 16. §6 (state machines) → Tasks 1, 3, 5, 10, 13. §7 (YAML seam + tripwire) → Task 1. §8 (policy snapshot) → Tasks 2, 3, 10, 12. §9 (envelope) → Task 3. §10 (maker guard) → Task 5. §11 (idempotency) → Tasks 4, 11, 13, 14. §12-13 (OCC, N-of-M, rollback) → Tasks 3, 5, 6. §14 (audit) → Task 3-5, 8. §15 (expiry) → Task 8. §16-17 (events, outbox) → Tasks 4, 7. §18 (data model) → Tasks 3, 10. §19 (API contracts) → Tasks 9, 15. §20 (testing priority) → reflected in task ordering (state/guards before controllers throughout). §21 (out of scope) → Task 17 README, Task 18 docs. §22 (build order) → this plan's task ordering. No gaps found.
+**Spec coverage:** §1-4 (thesis, stack, repo, ownership) → Tasks 1, 3, 10. §5 (comm/failure) → Tasks 7, 12, 13, 14, 16. §6 (state machines) → Tasks 1, 3, 5, 10, 13. §7 (YAML seam + tripwire + startup guard validation) → Tasks 1, 2, 4. §8 (policy snapshot) → Tasks 2, 3, 10, 12. §9 (envelope) → Task 3. §10 (maker guard) → Task 5. §11 (idempotency, incl. why approve/reject/cancel don't take a client key) → Tasks 4, 5, 9, 11, 13, 14. §12-13 (OCC, N-of-M, rollback) → Tasks 3, 5, 6. §14 (audit) → Task 3-5, 8. §15 (expiry) → Task 8. §16-17 (events, outbox, claim-based relay) → Tasks 3, 4, 7. §18 (data model) → Tasks 3, 10. §19 (API contracts) → Tasks 9, 15. §20 (testing priority) → reflected in task ordering (state/guards before controllers throughout). §21 (out of scope) → Task 17 README, Task 18 docs. §22 (build order) → this plan's task ordering. No gaps found.
 
 **Placeholder scan:** no TBD/TODO markers; every step above has real code or, for Task 18 (documentation), an explicit content structure with spec section references rather than a bare "write the docs" instruction.
 
 **Type consistency:** `ApprovalRequestView`, `CreateApprovalRequest`, `ConcurrentStateChangeException`, `InvalidStateTransitionException` (Tasks 4-5) are reused with identical signatures through Tasks 6, 8, 9. `TransferView`, `SubmitTransferCommand` (Task 13) match Task 15's controller usage. `IncomingEvent` (Task 14) matches Task 15's `EventWebhookController` construction from `X-Event-Id`/`X-Event-Type` headers + `IncomingEventDto.requestId()` body — verified consistent. `WorkflowResponse.state()` (Task 12) is read as a raw string by `TransferSubmissionService` (Task 13) rather than deserialized into `ApprovalState` — deliberate, since Transfer Service never needs to interpret the engine's state enum, only to store `approvalRequestId` and wait for the async event.
+
+**Post-review fixes (four issues raised against this plan before execution, all applied above):**
+1. *Outbox relay claim race* — `OutboxEventRepository` (Task 3) gained `selectAndLockUnpublishedIds`/`markClaimed`; `OutboxRelay` (Task 7) now claims a batch via `FOR UPDATE SKIP LOCKED` in a short transaction before publishing outside it, with a 30s stale-claim reclaim for crash recovery. Safe for >1 relay instance even though this exercise runs one.
+2. *Release idempotency contract* — `CoreBankingClient.release` (Task 11) now documents its idempotent-by-`transferId` contract explicitly; the stub already implemented it, this made the guarantee visible rather than incidental.
+3. *Unused `idempotencyKey` on approve/reject/cancel* — removed from `ApprovalCommandService` (Task 5), its tests (Tasks 5, 6, 8), and `ApprovalController` (Task 9); decision-level idempotency now rests entirely on Task 3's `UNIQUE(request_id, actor_id)` constraint, documented in spec §11.
+4. *Weak YAML validation* — `YamlWorkflowLoader.validate()` (Task 1) now checks `initialState` is declared and transition names are unique, plus a negative-path test proving a malformed definition fails fast; guard-name validation against the live `GuardRegistry` moved to `WorkflowConfig` (Task 4, new `WorkflowConfigTest`) since that's the first point both beans exist.
 

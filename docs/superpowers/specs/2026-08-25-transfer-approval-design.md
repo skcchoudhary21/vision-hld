@@ -271,12 +271,12 @@ transfer(...), release_state(...), processed_event(event_id UNIQUE, processed_at
 ```
 POST /transfers                      → 201 { transferId, state }
 POST /transfers/{id}/submit          → 202 { transferId, state }
-POST /approvals/{id}/approve         Idempotency-Key: <key>
+POST /approvals/{id}/approve         (no Idempotency-Key — see §11)
   → 200 { requestId, state, decisionRecorded: true }
   → 409 CONCURRENT_STATE_CHANGE { code, requestId, currentState }
   → 409 INVALID_STATE_TRANSITION { code, requestId, currentState, requestedAction }
-POST /approvals/{id}/reject
-POST /approvals/{id}/cancel
+POST /approvals/{id}/reject          (no Idempotency-Key — see §11)
+POST /approvals/{id}/cancel          (no Idempotency-Key — see §11)
 GET  /approvals/{id}
 ```
 
