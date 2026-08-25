@@ -22,7 +22,7 @@
 - Every competing *transition attempt* uses one mechanism: a single guarded conditional `UPDATE ... WHERE state = :expected AND version = :expected` — no `@Version`-exception-based locking, no special-cased race handling. **Amendment (post-review):** `approve`/`reject`/`cancel` additionally take a `SELECT ... FOR UPDATE` row lock on the request *before* counting decisions, because quorum counting is an aggregate read, not a transition — two concurrent transactions under READ COMMITTED can each undercount (neither sees the other's uncommitted decision) and both skip the transition entirely, stranding a quorum-satisfied request in `PENDING_APPROVAL` forever. The guarded UPDATE alone only protects the transition *attempt*, not the decision of whether to attempt one. The expiry sweeper still needs no explicit lock of its own — its plain guarded UPDATE naturally blocks behind a concurrent `approve`/`reject`/`cancel`'s row lock and re-checks fresh state once unblocked.
 - **Never call a `@Transactional` method on `this` from within the same class.** Spring's proxy-based AOP does not intercept self-invocation, so the annotation is silently a no-op — the method runs with no transaction (each repository call gets its own ad-hoc one instead). Any transactional unit that a scheduled/looping method needs must live on a separate injected bean, called through the real proxy.
 - **Amendment (Task 3 execution finding): Spring Boot 4.1.1 ships Jackson 3, not Jackson 2.** `spring-boot-starter-jackson` resolves `tools.jackson.core:jackson-databind:3.1.5` (group id `tools.jackson`, not `com.fasterxml.jackson`) — verified via `./gradlew dependencies`. Every `ObjectMapper` import in this plan is `import tools.jackson.databind.ObjectMapper;`, not `com.fasterxml.jackson.databind.ObjectMapper` — method names (`writeValueAsString`, `readValue`, `writeValueAsBytes`) are unchanged, only the package. This applies to both services (both on Boot 4.1.1) wherever `ObjectMapper` is imported directly or autowired.
-- **Amendment (Task 3 execution finding): Spring Boot 4.1.1 split test-slice annotations into per-feature artifacts.** `@DataJpaTest` is `org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest` (artifact `spring-boot-data-jpa-test`, not bundled in the monolithic `spring-boot-test-autoconfigure` the way Boot 3 had it); `@AutoConfigureTestDatabase` is `org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase`. Only Task 3 uses these annotations in this plan.
+- **Amendment (Task 3 execution finding): Spring Boot 4.1.1 split test-slice annotations into per-feature artifacts.** `@DataJpaTest` is `org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest` (artifact `spring-boot-data-jpa-test`, not bundled in the monolithic `spring-boot-test-autoconfigure` the way Boot 3 had it); `@AutoConfigureTestDatabase` is `org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase`. Only Task 3 uses these annotations in this plan. Same story for `@AutoConfigureMockMvc` (Tasks 9, 15): it's `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`, artifact `spring-boot-webmvc-test`.
 - Controller/MockMvc tests are lowest priority (spec §20) — cover happy path + one 409 case per endpoint, do not over-invest.
 - `spring.jpa.hibernate.ddl-auto=update` is the deliberate schema-management trade-off for this exercise (no Flyway) — state this in the README, don't silently deviate from it mid-plan.
 
@@ -2585,6 +2585,11 @@ git commit -m "feat(approval-engine): expiry sweeper on the guarded per-row tran
 - Consumes: `ApprovalCommandService` (Tasks 4-5, `approve`/`reject`/`cancel` now take no `idempotencyKey`), `ConcurrentStateChangeException`/`InvalidStateTransitionException`/`ForbiddenActionException`/`ApprovalRequestNotFoundException`/`IdempotencyConflictException` (Tasks 4-5).
 - Produces: `POST /approvals` (create, requires `Idempotency-Key`), `POST /approvals/{id}/approve|reject|cancel` (no `Idempotency-Key` header — decision-level idempotency per spec §11), `GET /approvals/{id}` — this is the public contract Transfer Service's `ApprovalEngineClient` (Task 15) is written against.
 
+Add to `approval-engine/build.gradle.kts` dependencies (Spring Boot 4.1.1 moved `@AutoConfigureMockMvc` out of the monolithic test-autoconfigure module too, same pattern as Task 3's `@DataJpaTest` — it's now `org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc`):
+```kotlin
+    testImplementation("org.springframework.boot:spring-boot-webmvc-test")
+```
+
 - [ ] **Step 1: Write the DTOs and the failing controller test (happy path + one 409 per spec §19)**
 
 `approval-engine/src/main/java/com/visionbank/approval/web/dto/CreateApprovalRequestDto.java`:
@@ -2641,7 +2646,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.visionbank.approval.web.dto.CreateApprovalRequestDto;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -2710,6 +2715,21 @@ class ApprovalControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code", is("CONCURRENT_STATE_CHANGE")));
     }
+
+    @Test
+    void getReturnsCurrentStateAndReturns404WhenNotFound() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("ctrl-3", 1)));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/ctrl-3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state", is("PENDING_APPROVAL")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/does-not-exist"))
+                .andExpect(status().isNotFound());
+    }
 }
 ```
 
@@ -2724,7 +2744,9 @@ Expected: FAIL — `ApprovalController` does not exist.
 ```java
 package com.visionbank.approval.web;
 
+import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.PolicySnapshot;
+import com.visionbank.approval.repository.ApprovalRequestRepository;
 import com.visionbank.approval.service.*;
 import com.visionbank.approval.web.dto.*;
 import jakarta.validation.Valid;
@@ -2735,9 +2757,18 @@ import org.springframework.web.bind.annotation.*;
 public class ApprovalController {
 
     private final ApprovalCommandService service;
+    private final ApprovalRequestRepository requests;
 
-    public ApprovalController(ApprovalCommandService service) {
+    public ApprovalController(ApprovalCommandService service, ApprovalRequestRepository requests) {
         this.service = service;
+        this.requests = requests;
+    }
+
+    @GetMapping("/{id}")
+    public ApprovalResponseDto get(@PathVariable String id) {
+        ApprovalRequest r = requests.findByRequestId(id)
+                .orElseThrow(() -> new ApprovalRequestNotFoundException(id));
+        return new ApprovalResponseDto(r.getRequestId(), r.getState(), r.getVersion());
     }
 
     @PostMapping
@@ -2827,7 +2858,7 @@ public class ApiExceptionHandler {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd approval-engine && ./gradlew test --tests ApprovalControllerTest`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Run the full Approval Engine test suite**
 
@@ -4131,6 +4162,11 @@ git commit -m "feat(transfer-service): idempotent event consumption with single 
 - Consumes: `TransferSubmissionService` (Task 13), `ApprovalEventListener` (Task 14).
 - Produces: `POST /transfers` (submit), `GET /transfers/{id}`, `POST /internal/events` — this is the `webhookUrl` Task 7's `OutboxRelay` posts to and Task 16's docker-compose wires via `transfer-service.webhook-url` / `TRANSFER_WEBHOOK_URL`.
 
+Add to `transfer-service/build.gradle.kts` dependencies (same Boot 4.1.1 package move Task 9 hit for `@AutoConfigureMockMvc`):
+```kotlin
+    testImplementation("org.springframework.boot:spring-boot-webmvc-test")
+```
+
 - [ ] **Step 1: Write the DTOs and the failing controller test**
 
 `transfer-service/src/main/java/com/visionbank/transfer/web/dto/SubmitTransferDto.java`:
@@ -4175,7 +4211,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
