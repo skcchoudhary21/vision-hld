@@ -21,6 +21,8 @@
 - No domain rules (`amount > threshold`, `balance >= amount`, etc.) inside Approval Engine guards — engine guards are generic only (`approval_required`, `approvals_satisfied`, `actor_is_maker`, `actor_is_eligible_checker`, `sla_expired`).
 - Every competing *transition attempt* uses one mechanism: a single guarded conditional `UPDATE ... WHERE state = :expected AND version = :expected` — no `@Version`-exception-based locking, no special-cased race handling. **Amendment (post-review):** `approve`/`reject`/`cancel` additionally take a `SELECT ... FOR UPDATE` row lock on the request *before* counting decisions, because quorum counting is an aggregate read, not a transition — two concurrent transactions under READ COMMITTED can each undercount (neither sees the other's uncommitted decision) and both skip the transition entirely, stranding a quorum-satisfied request in `PENDING_APPROVAL` forever. The guarded UPDATE alone only protects the transition *attempt*, not the decision of whether to attempt one. The expiry sweeper still needs no explicit lock of its own — its plain guarded UPDATE naturally blocks behind a concurrent `approve`/`reject`/`cancel`'s row lock and re-checks fresh state once unblocked.
 - **Never call a `@Transactional` method on `this` from within the same class.** Spring's proxy-based AOP does not intercept self-invocation, so the annotation is silently a no-op — the method runs with no transaction (each repository call gets its own ad-hoc one instead). Any transactional unit that a scheduled/looping method needs must live on a separate injected bean, called through the real proxy.
+- **Amendment (Task 3 execution finding): Spring Boot 4.1.1 ships Jackson 3, not Jackson 2.** `spring-boot-starter-jackson` resolves `tools.jackson.core:jackson-databind:3.1.5` (group id `tools.jackson`, not `com.fasterxml.jackson`) — verified via `./gradlew dependencies`. Every `ObjectMapper` import in this plan is `import tools.jackson.databind.ObjectMapper;`, not `com.fasterxml.jackson.databind.ObjectMapper` — method names (`writeValueAsString`, `readValue`, `writeValueAsBytes`) are unchanged, only the package. This applies to both services (both on Boot 4.1.1) wherever `ObjectMapper` is imported directly or autowired.
+- **Amendment (Task 3 execution finding): Spring Boot 4.1.1 split test-slice annotations into per-feature artifacts.** `@DataJpaTest` is `org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest` (artifact `spring-boot-data-jpa-test`, not bundled in the monolithic `spring-boot-test-autoconfigure` the way Boot 3 had it); `@AutoConfigureTestDatabase` is `org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase`. Only Task 3 uses these annotations in this plan.
 - Controller/MockMvc tests are lowest priority (spec §20) — cover happy path + one 409 case per endpoint, do not over-invest.
 - `spring.jpa.hibernate.ddl-auto=update` is the deliberate schema-management trade-off for this exercise (no Flyway) — state this in the README, don't silently deviate from it mid-plan.
 
@@ -639,7 +641,12 @@ git commit -m "feat(approval-engine): guard registry and standard guards"
 
 **Interfaces:**
 - Consumes: `PolicySnapshot`, `ApprovalState` (Tasks 1-2).
-- Produces: `ApprovalRequestRepository.guardedTransition(String requestId, ApprovalState expectedState, long expectedVersion, ApprovalState newState) -> int` (the single mechanism every later task uses for every transition); `ApprovalRequestRepository.findByRequestId(String) -> Optional<ApprovalRequest>`; `ApprovalDecisionRepository.countByRequestId(String) -> long`; entity setters/getters used verbatim by Tasks 4-9.
+- Produces: `ApprovalRequestRepository.guardedTransition(String requestId, ApprovalState expectedState, long expectedVersion, ApprovalState newState) -> int` (the single mechanism every later task uses for every transition); `ApprovalRequestRepository.findByRequestId(String) -> Optional<ApprovalRequest>`; `ApprovalDecisionRepository.countByRequestIdAndDecision(String, ApprovalDecision.DecisionType) -> long`; entity setters/getters used verbatim by Tasks 4-9.
+
+Add to `approval-engine/build.gradle.kts` dependencies (Spring Boot 4.1.1 split `@DataJpaTest`/`@AutoConfigureTestDatabase` out of the monolithic test-autoconfigure module into a per-feature artifact):
+```kotlin
+    testImplementation("org.springframework.boot:spring-boot-data-jpa-test")
+```
 
 - [ ] **Step 1: Write the JSONB converter and the failing repository test**
 
@@ -647,7 +654,7 @@ git commit -m "feat(approval-engine): guard registry and standard guards"
 ```java
 package com.visionbank.approval.domain;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Converter;
 
@@ -684,8 +691,8 @@ import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -697,7 +704,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase.Replace.NONE;
+import static org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase.Replace.NONE;
 
 @Testcontainers
 @DataJpaTest
@@ -709,7 +716,7 @@ class ApprovalRequestRepositoryTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -1018,8 +1025,12 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
      * The single concurrency mechanism for every transition in the engine.
      * Returns 1 if this call won the race, 0 if the state/version had already
      * moved (lost race or illegal transition — caller re-reads to distinguish).
+     * clearAutomatically = true: a bulk @Modifying update doesn't sync back
+     * into an already-loaded managed entity's in-memory fields — without
+     * this, a find() for the same id later in the same persistence context
+     * returns the stale pre-update instance instead of re-querying.
      */
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE ApprovalRequest a SET a.state = :newState, a.version = a.version + 1 " +
            "WHERE a.requestId = :requestId AND a.state = :expectedState AND a.version = :expectedVersion")
     int guardedTransition(@Param("requestId") String requestId,
@@ -1095,7 +1106,7 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, String
            nativeQuery = true)
     List<String> selectAndLockUnpublishedIds(@Param("staleBefore") Instant staleBefore, @Param("batchSize") int batchSize);
 
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE OutboxEvent o SET o.claimedAt = :now WHERE o.eventId IN :ids")
     void markClaimed(@Param("ids") List<String> ids, @Param("now") Instant now);
 }
@@ -1173,7 +1184,7 @@ class ApprovalCommandServiceCreateTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -1273,7 +1284,7 @@ public class IdempotencyConflictException extends RuntimeException {
 ```java
 package com.visionbank.approval.service;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.visionbank.approval.domain.*;
 import com.visionbank.approval.repository.*;
 import com.visionbank.approval.workflow.GuardContext;
@@ -1517,7 +1528,7 @@ class ApprovalCommandServiceApproveTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -1862,7 +1873,7 @@ class ApprovalConcurrencyTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -2053,7 +2064,7 @@ class OutboxRelayTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("transfer-service.webhook-url", () -> "http://localhost:9091/internal/events");
@@ -2289,7 +2300,7 @@ class ExpirySweeperTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -2482,7 +2493,7 @@ class ExpiryVersusApproveConcurrencyTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -2614,7 +2625,7 @@ public record ErrorResponseDto(String code, String requestId, String currentStat
 ```java
 package com.visionbank.approval.web;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.visionbank.approval.web.dto.CreateApprovalRequestDto;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -2646,7 +2657,7 @@ class ApprovalControllerTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
     }
@@ -4145,7 +4156,7 @@ public record IncomingEventDto(String requestId) {}
 ```java
 package com.visionbank.transfer.web;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.visionbank.transfer.web.dto.SubmitTransferDto;
 import org.junit.jupiter.api.AfterEach;
