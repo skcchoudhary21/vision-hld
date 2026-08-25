@@ -8,12 +8,7 @@ group = "com.visionbank"
 version = "0.0.1"
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
-tasks.withType<JavaCompile> {
-    options.release.set(21)
+    toolchain { languageVersion.set(JavaLanguageVersion.of(21)) }
 }
 
 repositories { mavenCentral() }
