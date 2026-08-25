@@ -2,3 +2,5 @@
 build/
 .gradle/
 gradlew.bat
+!approval-engine/gradle/wrapper/gradle-wrapper.properties
+!transfer-service/gradle/wrapper/gradle-wrapper.properties
