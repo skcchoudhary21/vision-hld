@@ -73,4 +73,19 @@ class ApprovalControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code", is("CONCURRENT_STATE_CHANGE")));
     }
+
+    @Test
+    void getReturnsCurrentStateAndReturns404WhenNotFound() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("ctrl-3", 1)));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/ctrl-3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.state", is("PENDING_APPROVAL")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/does-not-exist"))
+                .andExpect(status().isNotFound());
+    }
 }
