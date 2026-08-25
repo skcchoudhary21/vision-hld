@@ -3451,9 +3451,11 @@ public record WorkflowResponse(String requestId, String state, long version) {}
 package com.visionbank.transfer.approval;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.util.Map;
 
 @Component
@@ -3462,7 +3464,16 @@ public class ApprovalEngineClient {
     private final RestClient restClient;
 
     public ApprovalEngineClient(@Value("${approval-engine.base-url}") String baseUrl) {
-        this.restClient = RestClient.builder().baseUrl(baseUrl).build();
+        // With no Reactor Netty/Apache HttpClient on the classpath, RestClient falls back
+        // to JDK HttpClient, which defaults to HTTP/2 and attempts an h2c upgrade — that
+        // negotiation fails ("RST_STREAM: Stream cancelled") against a plain HTTP/1.1
+        // server (WireMock in tests, and Spring Boot's default embedded Tomcat in the
+        // real approval-engine). Pin HTTP/1.1 explicitly.
+        HttpClient httpClient = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+        this.restClient = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(new JdkClientHttpRequestFactory(httpClient))
+                .build();
     }
 
     public WorkflowResponse createWorkflow(CreateWorkflowRequest req, String idempotencyKey) {
