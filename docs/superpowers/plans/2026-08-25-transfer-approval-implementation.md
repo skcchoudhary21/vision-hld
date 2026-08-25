@@ -53,8 +53,12 @@ Append to the existing repo-root `.gitignore` (it currently has only `.worktrees
 build/
 .gradle/
 gradlew.bat
+!approval-engine/gradle/wrapper/gradle-wrapper.properties
+!transfer-service/gradle/wrapper/gradle-wrapper.properties
 ```
 `gradlew.bat` is ignored deliberately — this project only ships the Unix `gradlew`; the `.bat` wrapper isn't generated and shouldn't be. `gradle/wrapper/gradle-wrapper.jar` and `gradle-wrapper.properties` are NOT ignored — those are meant to be committed (that's the point of a Gradle wrapper: reproducible builds without a global Gradle install).
+
+**Check this before trusting `git status`/`git add` on this machine:** a machine-level global gitignore (`core.excludesFile`, commonly `~/.gitignore_global`) can silently exclude files a project-local `.gitignore` never mentions — `*.properties` is a common global pattern and it swallows `gradle-wrapper.properties` with zero visible trace in `git status` (not even as "untracked"). Run `git check-ignore -v approval-engine/gradle/wrapper/gradle-wrapper.properties` after generating the wrapper; if it reports a match against a file outside this repo, the negation lines above are what fix it — a project `.gitignore` negation overrides a global excludesFile pattern for that path. Verify with `git ls-files approval-engine/gradle/wrapper/` afterward — it must list both `gradle-wrapper.jar` and `gradle-wrapper.properties`, not just the jar.
 
 `approval-engine/settings.gradle.kts`:
 ```kotlin
@@ -2920,7 +2924,7 @@ Generate the real Gradle wrapper now, same as Task 1 (see its Global Constraints
 ```bash
 cd transfer-service && gradle wrapper --gradle-version 8.14.3 && chmod +x gradlew && cd ..
 ```
-Commit `gradlew`, `gradle/wrapper/gradle-wrapper.jar`, and `gradle/wrapper/gradle-wrapper.properties` with this task's other files.
+Commit `gradlew`, `gradle/wrapper/gradle-wrapper.jar`, and `gradle/wrapper/gradle-wrapper.properties` with this task's other files. Task 1 already added a `!transfer-service/gradle/wrapper/gradle-wrapper.properties` negation to the repo-root `.gitignore` for exactly this — but still run `git ls-files transfer-service/gradle/wrapper/` after committing and confirm both the jar and the properties file are listed (Task 1 hit a machine-global `*.properties` gitignore rule that silently dropped this file with no trace in `git status` — don't assume it's fine just because the command exited 0).
 
 - [ ] **Step 2: Write domain types and the failing `PolicyResolver` test**
 
