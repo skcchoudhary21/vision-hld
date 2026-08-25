@@ -7,6 +7,7 @@ import com.visionbank.approval.workflow.GuardContext;
 import com.visionbank.approval.workflow.GuardRegistry;
 import com.visionbank.approval.workflow.Transition;
 import com.visionbank.approval.workflow.WorkflowDefinition;
+import com.visionbank.approval.workflow.WorkflowSelector;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -24,19 +25,21 @@ public class ApprovalCommandService {
     private final OutboxEventRepository outbox;
     private final IdempotencyRecordRepository idempotency;
     private final WorkflowDefinition workflow;
+    private final WorkflowSelector workflowSelector;
     private final GuardRegistry guards;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApprovalCommandService(ApprovalRequestRepository requests, ApprovalDecisionRepository decisions,
                                    AuditLogRepository audits, OutboxEventRepository outbox,
                                    IdempotencyRecordRepository idempotency, WorkflowDefinition workflow,
-                                   GuardRegistry guards) {
+                                   WorkflowSelector workflowSelector, GuardRegistry guards) {
         this.requests = requests;
         this.decisions = decisions;
         this.audits = audits;
         this.outbox = outbox;
         this.idempotency = idempotency;
         this.workflow = workflow;
+        this.workflowSelector = workflowSelector;
         this.guards = guards;
     }
 
@@ -59,9 +62,13 @@ public class ApprovalCommandService {
             throw new IdempotencyConflictException(cmd.requestId());
         }
 
+        WorkflowDefinition resolvedWorkflow = workflowSelector.resolve(cmd.requestType());
+
         ApprovalRequest request = new ApprovalRequest();
         request.setRequestId(cmd.requestId());
         request.setRequestType(cmd.requestType());
+        request.setWorkflowId(resolvedWorkflow.name());
+        request.setWorkflowVersion(resolvedWorkflow.version());
         request.setMakerId(cmd.makerId());
         request.setPolicySnapshot(cmd.policy());
         request.setPayload(cmd.payloadJson());
@@ -69,10 +76,6 @@ public class ApprovalCommandService {
         request.setExpiresAt(cmd.expiresAt());
         request.setVersion(0L);
         request.setState("SUBMITTED");
-        // Hardcoded literal for now (nullable=false requires some value) —
-        // dynamic resolution via WorkflowRegistry/WorkflowSelector lands in Task 4.
-        request.setWorkflowId("transfer-approval");
-        request.setWorkflowVersion(1);
 
         // currentState is "PENDING_APPROVAL", not literally "SUBMITTED": the
         // no_approval_required/approval_required guards resolve their StagePolicy
@@ -83,7 +86,7 @@ public class ApprovalCommandService {
         // this hardcodes the one gate transfer-approval actually has, same as the
         // workflowId/workflowVersion literals above.
         GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false, "PENDING_APPROVAL");
-        Transition initial = workflow.transitionsFrom("SUBMITTED").stream()
+        Transition initial = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
                 .filter(t -> guards.get(t.guard()).evaluate(ctx))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("No transition from SUBMITTED satisfied by policy"));

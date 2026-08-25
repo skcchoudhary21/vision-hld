@@ -1,7 +1,9 @@
 package com.visionbank.approval.service;
 
+import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.domain.StagePolicy;
+import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +38,9 @@ class ApprovalCommandServiceCreateTest {
 
     @Autowired
     ApprovalCommandService service;
+
+    @Autowired
+    ApprovalRequestRepository requests;
 
     private CreateApprovalRequest cmd(String requestId, int requiredApprovals) {
         return new CreateApprovalRequest(
@@ -90,5 +95,14 @@ class ApprovalCommandServiceCreateTest {
 
         assertThatThrownBy(() -> service.create(cmd("reuse-1", 0), UUID.randomUUID().toString()))
                 .isInstanceOf(IdempotencyConflictException.class);
+    }
+
+    @Test
+    void createResolvesAndPersistsTheSelectedWorkflow() {
+        ApprovalRequestView view = service.create(cmd("workflow-resolve-1", 0), UUID.randomUUID().toString());
+
+        ApprovalRequest saved = requests.findByRequestId(view.requestId()).orElseThrow();
+        assertThat(saved.getWorkflowId()).isEqualTo("transfer-approval");
+        assertThat(saved.getWorkflowVersion()).isEqualTo(1);
     }
 }
