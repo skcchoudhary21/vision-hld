@@ -29,7 +29,7 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
                            @Param("expectedVersion") long expectedVersion,
                            @Param("newState") String newState);
 
-    List<ApprovalRequest> findByStateAndExpiresAtBefore(String state, Instant cutoff);
+    List<ApprovalRequest> findByStateInAndExpiresAtBefore(List<String> states, Instant cutoff);
 
     /**
      * Row lock for approve/reject/cancel (Task 5), taken before counting

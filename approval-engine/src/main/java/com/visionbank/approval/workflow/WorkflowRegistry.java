@@ -5,6 +5,7 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class WorkflowRegistry {
@@ -21,6 +22,20 @@ public class WorkflowRegistry {
             throw new IllegalStateException("No workflow definition loaded for id: " + workflowId);
         }
         return def;
+    }
+
+    // Used by ExpirySweeper (Task 5) to build its candidate query across every loaded
+    // workflow, not just one hardcoded state. A state id that's terminal in one workflow
+    // but coincidentally shares a name with a non-terminal state in another workflow is an
+    // edge case no current sample workflow hits -- both examples use disjoint state-id
+    // vocabularies. Not worth solving speculatively.
+    public List<String> allNonTerminalStates() {
+        return byId.values().stream()
+                .flatMap(def -> def.states().stream())
+                .map(WorkflowDefinition.StateDef::id)
+                .distinct()
+                .filter(id -> byId.values().stream().noneMatch(def -> def.terminalStates().contains(id)))
+                .collect(java.util.stream.Collectors.toList());
     }
 
     private static Map<String, WorkflowDefinition> loadAll(String pattern, WorkflowLoader loader) {
