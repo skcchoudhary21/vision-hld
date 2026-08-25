@@ -4430,6 +4430,7 @@ git commit -m "feat(transfer-service): transfer submission and event webhook con
 **Files:**
 - Create: `approval-engine/Dockerfile`
 - Create: `transfer-service/Dockerfile`
+- Create: `docker-compose-postgres-init/01-init.sql`
 - Create: `docker-compose.yml`
 - Create: `docker-compose.smoke-test.sh`
 
@@ -4480,33 +4481,32 @@ ls transfer-service/gradlew transfer-service/gradle/wrapper/gradle-wrapper.jar
 ```
 Expected: all four paths exist and are tracked in git (`git ls-files` should list them). If either is missing, generate it now exactly as Task 1/10 specify (`gradle wrapper --gradle-version 8.14.3`) — don't use a different version here, the two services' wrappers must match.
 
-- [ ] **Step 3: Write `docker-compose.yml`**
+- [ ] **Step 3: Write the Postgres init script and `docker-compose.yml`**
+
+**One Postgres container, two databases** (not two containers) — deliberate resource trade-off for local/take-home use: a single `postgres:16-alpine` instance hosts both `transfer` and `approval` as separate databases with separate roles, keeping the same credential-per-service separation as before, just co-located in one server process instead of two. Each service still only has grants on its own database — nothing here lets one service's DB user touch the other's schema.
+
+`docker-compose-postgres-init/01-init.sql`:
+```sql
+CREATE USER transfer WITH PASSWORD 'transfer';
+CREATE DATABASE transfer OWNER transfer;
+
+CREATE USER approval WITH PASSWORD 'approval';
+CREATE DATABASE approval OWNER approval;
+```
 
 `docker-compose.yml`:
 ```yaml
 services:
-  postgres-transfer:
+  postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: transfer
-      POSTGRES_USER: transfer
-      POSTGRES_PASSWORD: transfer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     ports: ["5432:5432"]
+    volumes:
+      - ./docker-compose-postgres-init:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U transfer"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  postgres-approval:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: approval
-      POSTGRES_USER: approval
-      POSTGRES_PASSWORD: approval
-    ports: ["5433:5432"]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U approval"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -4515,24 +4515,24 @@ services:
     build: ./approval-engine
     ports: ["8081:8081"]
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-approval:5432/approval?stringtype=unspecified
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/approval?stringtype=unspecified
       SPRING_DATASOURCE_USERNAME: approval
       SPRING_DATASOURCE_PASSWORD: approval
       TRANSFER-SERVICE_WEBHOOK-URL: http://transfer-service:8080/internal/events
     depends_on:
-      postgres-approval:
+      postgres:
         condition: service_healthy
 
   transfer-service:
     build: ./transfer-service
     ports: ["8080:8080"]
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-transfer:5432/transfer
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transfer
       SPRING_DATASOURCE_USERNAME: transfer
       SPRING_DATASOURCE_PASSWORD: transfer
       APPROVAL-ENGINE_BASE-URL: http://approval-engine:8081
     depends_on:
-      postgres-transfer:
+      postgres:
         condition: service_healthy
       approval-engine:
         condition: service_started
@@ -4589,7 +4589,7 @@ Expected: `SMOKE TEST PASSED: transfer released end-to-end`. If it fails, check 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add approval-engine/Dockerfile transfer-service/Dockerfile docker-compose.yml docker-compose.smoke-test.sh
+git add approval-engine/Dockerfile transfer-service/Dockerfile docker-compose-postgres-init/01-init.sql docker-compose.yml docker-compose.smoke-test.sh
 git commit -m "chore: dockerize both services and add end-to-end smoke test"
 ```
 (Wrapper files were already committed in Task 1/10 — nothing new to add here for them.)
