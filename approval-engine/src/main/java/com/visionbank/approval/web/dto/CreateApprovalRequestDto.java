@@ -4,14 +4,13 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.Instant;
-import java.util.List;
+import java.util.Map;
 
 public record CreateApprovalRequestDto(
         @NotBlank String requestId,
         @NotBlank String requestType,
         @NotBlank String makerId,
-        @NotNull Integer requiredApprovals,
-        @NotNull List<String> eligibleRoles,
+        @NotNull Map<String, StagePolicyDto> stagePolicies,
         boolean makerCanApprove,
         @NotBlank String payloadJson,
         @NotNull Instant expiresAt) {}

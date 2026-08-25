@@ -1,6 +1,7 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.PolicySnapshot;
+import com.visionbank.approval.domain.StagePolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +14,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,7 +40,7 @@ class ApprovalCommandServiceCreateTest {
     private CreateApprovalRequest cmd(String requestId, int requiredApprovals) {
         return new CreateApprovalRequest(
                 requestId, "TRANSFER_APPROVAL", "maker-1",
-                new PolicySnapshot("v1", requiredApprovals, List.of("TRANSFER_CHECKER"), false),
+                new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(requiredApprovals, List.of("TRANSFER_CHECKER"))), false),
                 "{\"transferId\":\"" + requestId + "\"}",
                 Instant.now().plusSeconds(86400));
     }

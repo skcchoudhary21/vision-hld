@@ -2,6 +2,7 @@ package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.PolicySnapshot;
+import com.visionbank.approval.domain.StagePolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -14,6 +15,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,10 +50,12 @@ class ApprovalRequestRepositoryTest {
         r.setState("PENDING_APPROVAL");
         r.setVersion(0L);
         r.setMakerId("maker-1");
-        r.setPolicySnapshot(new PolicySnapshot("v1", 2, List.of("TRANSFER_CHECKER"), false));
+        r.setPolicySnapshot(new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(2, List.of("TRANSFER_CHECKER"))), false));
         r.setPayload("{}");
         r.setCreatedAt(Instant.now());
         r.setExpiresAt(Instant.now().plusSeconds(86400));
+        r.setWorkflowId("transfer-approval");
+        r.setWorkflowVersion(1);
         return r;
     }
 

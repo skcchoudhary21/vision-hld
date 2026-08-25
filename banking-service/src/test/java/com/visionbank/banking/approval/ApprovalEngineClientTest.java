@@ -42,6 +42,9 @@ class ApprovalEngineClientTest {
 
         assertThat(response.requestId()).isEqualTo("req-1");
         assertThat(response.state()).isEqualTo("PENDING_APPROVAL");
-        wireMock.verify(postRequestedFor(urlEqualTo("/approvals")).withHeader("Idempotency-Key", matching(".+")));
+        wireMock.verify(postRequestedFor(urlEqualTo("/approvals"))
+                .withHeader("Idempotency-Key", matching(".+"))
+                .withRequestBody(matchingJsonPath("$.stagePolicies.PENDING_APPROVAL.requiredApprovals", equalTo("1")))
+                .withRequestBody(matchingJsonPath("$.stagePolicies.PENDING_APPROVAL.eligibleRoles[0]", equalTo("TRANSFER_CHECKER"))));
     }
 }

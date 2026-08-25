@@ -1,6 +1,7 @@
 package com.visionbank.approval.web;
 
 import com.visionbank.approval.domain.PolicySnapshot;
+import com.visionbank.approval.domain.StagePolicy;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import com.visionbank.approval.repository.AuditLogRepository;
 import com.visionbank.approval.service.*;
@@ -9,6 +10,7 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/approvals")
@@ -28,7 +30,10 @@ public class ApprovalController {
     @PostMapping
     public ApprovalResponseDto create(@RequestHeader("Idempotency-Key") String idempotencyKey,
                                        @Valid @RequestBody CreateApprovalRequestDto dto) {
-        PolicySnapshot policy = new PolicySnapshot("v1", dto.requiredApprovals(), dto.eligibleRoles(), dto.makerCanApprove());
+        Map<String, StagePolicy> stages = dto.stagePolicies().entrySet().stream()
+                .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                        e -> new StagePolicy(e.getValue().requiredApprovals(), e.getValue().eligibleRoles())));
+        PolicySnapshot policy = new PolicySnapshot("v1", stages, dto.makerCanApprove());
         CreateApprovalRequest cmd = new CreateApprovalRequest(dto.requestId(), dto.requestType(), dto.makerId(),
                 policy, dto.payloadJson(), dto.expiresAt());
         ApprovalRequestView view = service.create(cmd, idempotencyKey);

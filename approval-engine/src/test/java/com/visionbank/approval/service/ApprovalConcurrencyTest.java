@@ -2,6 +2,7 @@ package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalDecision;
 import com.visionbank.approval.domain.PolicySnapshot;
+import com.visionbank.approval.domain.StagePolicy;
 import com.visionbank.approval.repository.ApprovalDecisionRepository;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.junit.jupiter.api.Test;
@@ -15,6 +16,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.*;
 
@@ -40,14 +42,14 @@ class ApprovalConcurrencyTest {
 
     private String createPendingRequiredOne(String requestId) {
         service.create(new CreateApprovalRequest(requestId, "TRANSFER_APPROVAL", "maker-1",
-                new PolicySnapshot("v1", 1, List.of("TRANSFER_CHECKER"), false),
+                new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(1, List.of("TRANSFER_CHECKER"))), false),
                 "{}", Instant.now().plusSeconds(86400)), UUID.randomUUID().toString());
         return requestId;
     }
 
     private String createPendingRequiredTwo(String requestId) {
         service.create(new CreateApprovalRequest(requestId, "TRANSFER_APPROVAL", "maker-1",
-                new PolicySnapshot("v1", 2, List.of("TRANSFER_CHECKER"), false),
+                new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(2, List.of("TRANSFER_CHECKER"))), false),
                 "{}", Instant.now().plusSeconds(86400)), UUID.randomUUID().toString());
         return requestId;
     }
@@ -80,7 +82,7 @@ class ApprovalConcurrencyTest {
         assertThat(outcomeA).isInstanceOf(ApprovalRequestView.class);
         assertThat(outcomeB).isInstanceOf(ApprovalRequestView.class);
         assertThat(requests.findByRequestId(id).get().getState()).isEqualTo("APPROVED");
-        assertThat(decisions.countByRequestIdAndDecision(id, ApprovalDecision.DecisionType.APPROVE)).isEqualTo(2);
+        assertThat(decisions.countByRequestIdAndDecisionAndState(id, ApprovalDecision.DecisionType.APPROVE, "PENDING_APPROVAL")).isEqualTo(2);
     }
 
     @Test
@@ -107,7 +109,7 @@ class ApprovalConcurrencyTest {
         assertThat(successes).isEqualTo(1);
         assertThat(conflicts).isEqualTo(1);
         assertThat(requests.findByRequestId(id).get().getState()).isEqualTo("APPROVED");
-        assertThat(decisions.countByRequestIdAndDecision(id, ApprovalDecision.DecisionType.APPROVE)).isEqualTo(1);
+        assertThat(decisions.countByRequestIdAndDecisionAndState(id, ApprovalDecision.DecisionType.APPROVE, "PENDING_APPROVAL")).isEqualTo(1);
     }
 
     @Test

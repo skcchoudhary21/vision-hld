@@ -7,7 +7,7 @@ import lombok.Setter;
 import java.time.Instant;
 
 @Entity
-@Table(name = "approval_decision", uniqueConstraints = @UniqueConstraint(columnNames = {"request_id", "actor_id"}))
+@Table(name = "approval_decision", uniqueConstraints = @UniqueConstraint(columnNames = {"request_id", "actor_id", "state"}))
 @Getter
 @Setter
 public class ApprovalDecision {
@@ -25,6 +25,9 @@ public class ApprovalDecision {
 
     @Column(name = "actor_role", nullable = false)
     private String actorRole;
+
+    @Column(name = "state", nullable = false)
+    private String state;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "decision", nullable = false)

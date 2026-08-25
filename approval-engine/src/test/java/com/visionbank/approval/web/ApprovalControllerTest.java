@@ -2,6 +2,7 @@ package com.visionbank.approval.web;
 
 import tools.jackson.databind.ObjectMapper;
 import com.visionbank.approval.web.dto.CreateApprovalRequestDto;
+import com.visionbank.approval.web.dto.StagePolicyDto;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -15,6 +16,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.is;
@@ -42,7 +44,8 @@ class ApprovalControllerTest {
 
     private String createDto(String requestId, int required) throws Exception {
         return mapper.writeValueAsString(new CreateApprovalRequestDto(
-                requestId, "TRANSFER_APPROVAL", "maker-1", required, List.of("TRANSFER_CHECKER"),
+                requestId, "TRANSFER_APPROVAL", "maker-1",
+                Map.of("PENDING_APPROVAL", new StagePolicyDto(required, List.of("TRANSFER_CHECKER"))),
                 false, "{}", Instant.now().plusSeconds(86400)));
     }
 

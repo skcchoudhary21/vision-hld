@@ -1,9 +1,8 @@
 package com.visionbank.approval.domain;
 
-import java.util.List;
+import java.util.Map;
 
 public record PolicySnapshot(
         String policyVersion,
-        int requiredApprovals,
-        List<String> eligibleRoles,
+        Map<String, StagePolicy> stages,
         boolean makerCanApprove) {}

@@ -69,8 +69,20 @@ public class ApprovalCommandService {
         request.setExpiresAt(cmd.expiresAt());
         request.setVersion(0L);
         request.setState("SUBMITTED");
+        // Hardcoded literal for now (nullable=false requires some value) —
+        // dynamic resolution via WorkflowRegistry/WorkflowSelector lands in Task 4.
+        request.setWorkflowId("transfer-approval");
+        request.setWorkflowVersion(1);
 
-        GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false);
+        // currentState is "PENDING_APPROVAL", not literally "SUBMITTED": the
+        // no_approval_required/approval_required guards resolve their StagePolicy
+        // via ctx.currentState(), and PolicySnapshot.stages() only ever carries an
+        // entry for the workflow's approval-gate state (PENDING_APPROVAL for
+        // transfer-approval) — SUBMITTED itself is never a keyed stage. Generic
+        // per-transition destination resolution lands with Task 5's dispatch work;
+        // this hardcodes the one gate transfer-approval actually has, same as the
+        // workflowId/workflowVersion literals above.
+        GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false, "PENDING_APPROVAL");
         Transition initial = workflow.transitionsFrom("SUBMITTED").stream()
                 .filter(t -> guards.get(t.guard()).evaluate(ctx))
                 .findFirst()
@@ -109,7 +121,7 @@ public class ApprovalCommandService {
         }
 
         GuardContext eligibility = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0,
-                actorId, actorRole, false);
+                actorId, actorRole, false, request.getState());
         if (guards.get("actor_is_maker").evaluate(eligibility) && !request.getPolicySnapshot().makerCanApprove()) {
             throw new ForbiddenActionException("Maker cannot approve their own request: " + requestId);
         }
@@ -125,13 +137,14 @@ public class ApprovalCommandService {
         decision.setRequestId(requestId);
         decision.setActorId(actorId);
         decision.setActorRole(actorRole);
+        decision.setState(request.getState());
         decision.setDecision(ApprovalDecision.DecisionType.APPROVE);
         decision.setCreatedAt(Instant.now());
         decisions.save(decision);
 
-        long approvalCount = decisions.countByRequestIdAndDecision(requestId, ApprovalDecision.DecisionType.APPROVE);
+        long approvalCount = decisions.countByRequestIdAndDecisionAndState(requestId, ApprovalDecision.DecisionType.APPROVE, request.getState());
         GuardContext quorumCtx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), approvalCount,
-                actorId, actorRole, false);
+                actorId, actorRole, false, request.getState());
 
         if (!guards.get("approvals_satisfied").evaluate(quorumCtx)) {
             writeAudit(requestId, actorId, actorRole, "APPROVAL_RECORDED", "PENDING_APPROVAL", "PENDING_APPROVAL");
@@ -155,7 +168,7 @@ public class ApprovalCommandService {
         if (!request.getState().equals("PENDING_APPROVAL")) {
             throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "reject");
         }
-        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false);
+        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false, request.getState());
         if (!guards.get("actor_is_eligible_checker").evaluate(ctx)) {
             throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);
         }
@@ -176,7 +189,7 @@ public class ApprovalCommandService {
         if (!request.getState().equals("PENDING_APPROVAL")) {
             throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "cancel");
         }
-        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false);
+        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false, request.getState());
         if (!guards.get("actor_is_maker").evaluate(ctx)) {
             throw new ForbiddenActionException("Only the maker can cancel request " + requestId);
         }

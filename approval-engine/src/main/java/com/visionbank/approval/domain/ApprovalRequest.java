@@ -40,4 +40,10 @@ public class ApprovalRequest {
 
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
+
+    @Column(name = "workflow_id", nullable = false)
+    private String workflowId;
+
+    @Column(name = "workflow_version", nullable = false)
+    private int workflowVersion;
 }

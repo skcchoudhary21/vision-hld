@@ -8,4 +8,5 @@ public record GuardContext(
         long currentApprovalCount,
         String actorId,
         String actorRole,
-        boolean slaExpired) {}
+        boolean slaExpired,
+        String currentState) {}
