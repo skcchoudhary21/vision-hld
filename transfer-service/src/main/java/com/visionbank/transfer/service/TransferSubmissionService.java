@@ -1,0 +1,79 @@
+package com.visionbank.transfer.service;
+
+import com.visionbank.transfer.approval.ApprovalEngineClient;
+import com.visionbank.transfer.approval.CreateWorkflowRequest;
+import com.visionbank.transfer.approval.WorkflowResponse;
+import com.visionbank.transfer.corebanking.CoreBankingClient;
+import com.visionbank.transfer.corebanking.ValidationResult;
+import com.visionbank.transfer.domain.Transfer;
+import com.visionbank.transfer.policy.ApprovalPolicy;
+import com.visionbank.transfer.policy.PolicyResolver;
+import com.visionbank.transfer.repository.TransferRepository;
+import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+
+// Deliberately NOT @Transactional — this method spans an external HTTP call
+// to the Approval Engine, which must never sit inside an open DB transaction.
+// TransferPersistenceService owns the two actual commit points.
+@Service
+public class TransferSubmissionService {
+
+    private final TransferRepository transfers;
+    private final CoreBankingClient coreBanking;
+    private final PolicyResolver policyResolver;
+    private final ApprovalEngineClient approvalEngineClient;
+    private final TransferPersistenceService persistenceService;
+
+    public TransferSubmissionService(TransferRepository transfers, CoreBankingClient coreBanking,
+                                      PolicyResolver policyResolver, ApprovalEngineClient approvalEngineClient,
+                                      TransferPersistenceService persistenceService) {
+        this.transfers = transfers;
+        this.coreBanking = coreBanking;
+        this.policyResolver = policyResolver;
+        this.approvalEngineClient = approvalEngineClient;
+        this.persistenceService = persistenceService;
+    }
+
+    public TransferView submit(SubmitTransferCommand cmd, String idempotencyKey) {
+        Optional<Transfer> existing = transfers.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            Transfer t = existing.get();
+            if (t.getApprovalRequestId() != null) {
+                return new TransferView(t.getTransferId(), t.getState()); // fully completed already
+            }
+            return completeWorkflowCreation(t, cmd); // resume: same transferId, same persisted expiresAt
+        }
+
+        ValidationResult validation = coreBanking.validate(cmd.fromAccount(), cmd.amountMinorUnits(), idempotencyKey);
+        if (!validation.isValid()) {
+            throw new ValidationFailedException(
+                    "sufficientBalance=" + validation.sufficientBalance()
+                    + " withinLimit=" + validation.withinLimit()
+                    + " duplicate=" + validation.duplicate());
+        }
+
+        String transferId = UUID.randomUUID().toString();
+        Instant expiresAt = Instant.now().plusSeconds(86400);
+        Transfer created = persistenceService.persistCreated(transferId, cmd, idempotencyKey, expiresAt);
+
+        return completeWorkflowCreation(created, cmd);
+    }
+
+    private TransferView completeWorkflowCreation(Transfer transfer, SubmitTransferCommand cmd) {
+        ApprovalPolicy policy = policyResolver.resolve(cmd.amountMinorUnits());
+        CreateWorkflowRequest workflowRequest = new CreateWorkflowRequest(
+                transfer.getTransferId(), "TRANSFER_APPROVAL", cmd.makerId(), policy,
+                "{\"transferId\":\"" + transfer.getTransferId() + "\",\"amount\":" + cmd.amountMinorUnits() + "}",
+                transfer.getExpiresAt()); // persisted value — never recomputed on retry
+        WorkflowResponse workflowResponse = approvalEngineClient.createWorkflow(workflowRequest, transfer.getTransferId());
+
+        // Always WAITING_FOR_APPROVAL here regardless of workflowResponse.state() —
+        // release is only ever triggered by consuming ApprovalApproved (Task 14),
+        // so auto-release and N-approver release share one trigger path.
+        Transfer completed = persistenceService.markWaitingForApproval(transfer.getTransferId(), workflowResponse.requestId());
+        return new TransferView(completed.getTransferId(), completed.getState());
+    }
+}
