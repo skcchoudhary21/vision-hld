@@ -1701,7 +1701,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
         ApprovalRequest request = loadOrThrow(requestId);
 
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
-            throw classifyRaceOrIllegal(requestId, request.getState(), "approve");
+            throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "approve");
         }
 
         GuardContext eligibility = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0,
@@ -1736,8 +1736,8 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
 
         int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.APPROVED);
         if (rows == 0) {
-            ApprovalState current = requests.findByRequestId(requestId).orElseThrow().getState();
-            throw classifyRaceOrIllegal(requestId, current, "approve");
+            ApprovalRequest currentEntity = requests.findByRequestId(requestId).orElseThrow();
+            throw classifyRaceOrIllegal(requestId, currentEntity.getState(), currentEntity.getVersion(), "approve");
         }
 
         writeAudit(requestId, actorId, actorRole, "APPROVED", ApprovalState.PENDING_APPROVAL, ApprovalState.APPROVED);
@@ -1749,7 +1749,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
     public ApprovalRequestView reject(String requestId, String actorId, String actorRole) {
         ApprovalRequest request = loadOrThrow(requestId);
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
-            throw classifyRaceOrIllegal(requestId, request.getState(), "reject");
+            throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "reject");
         }
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false);
         if (!guards.get("actor_is_eligible_checker").evaluate(ctx)) {
@@ -1758,8 +1758,8 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
 
         int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.REJECTED);
         if (rows == 0) {
-            ApprovalState current = requests.findByRequestId(requestId).orElseThrow().getState();
-            throw classifyRaceOrIllegal(requestId, current, "reject");
+            ApprovalRequest currentEntity = requests.findByRequestId(requestId).orElseThrow();
+            throw classifyRaceOrIllegal(requestId, currentEntity.getState(), currentEntity.getVersion(), "reject");
         }
         writeAudit(requestId, actorId, actorRole, "REJECTED", ApprovalState.PENDING_APPROVAL, ApprovalState.REJECTED);
         writeOutbox(requestId, "ApprovalRejected");
@@ -1770,7 +1770,7 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
     public ApprovalRequestView cancel(String requestId, String actorId) {
         ApprovalRequest request = loadOrThrow(requestId);
         if (request.getState() != ApprovalState.PENDING_APPROVAL) {
-            throw classifyRaceOrIllegal(requestId, request.getState(), "cancel");
+            throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "cancel");
         }
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false);
         if (!guards.get("actor_is_maker").evaluate(ctx)) {
@@ -1779,8 +1779,8 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
 
         int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.CANCELLED);
         if (rows == 0) {
-            ApprovalState current = requests.findByRequestId(requestId).orElseThrow().getState();
-            throw classifyRaceOrIllegal(requestId, current, "cancel");
+            ApprovalRequest currentEntity = requests.findByRequestId(requestId).orElseThrow();
+            throw classifyRaceOrIllegal(requestId, currentEntity.getState(), currentEntity.getVersion(), "cancel");
         }
         writeAudit(requestId, actorId, "MAKER", "CANCELLED", ApprovalState.PENDING_APPROVAL, ApprovalState.CANCELLED);
         writeOutbox(requestId, "ApprovalCancelled");
@@ -1804,11 +1804,23 @@ Add these fields/methods to `approval-engine/src/main/java/com/visionbank/approv
      * Otherwise the action was never legal from this state, regardless of timing
      * (409 INVALID_STATE_TRANSITION) — e.g. approve() on a request that auto-approved
      * straight from SUBMITTED and never passed through PENDING_APPROVAL.
+     *
+     * APPROVED is reachable both ways (auto_approve directly from SUBMITTED, and
+     * approve from PENDING_APPROVAL), so reachability alone can't tell them apart —
+     * both land on the same destination state. version breaks the tie: create()
+     * stamps version=1 on a request's one and only first transition, whichever
+     * branch. Reaching APPROVED via PENDING_APPROVAL requires that PENDING_APPROVAL
+     * transition (version 1) plus the later approve transition (version 2+) — so
+     * version<=1 at APPROVED can only mean the direct auto-approve path.
      */
-    private RuntimeException classifyRaceOrIllegal(String requestId, ApprovalState current, String action) {
+    private RuntimeException classifyRaceOrIllegal(String requestId, ApprovalState current, long currentVersion, String action) {
+        if (current == ApprovalState.PENDING_APPROVAL) {
+            return new ConcurrentStateChangeException(requestId, current);
+        }
         boolean reachableFromPendingApproval = workflow.transitionsFrom(ApprovalState.PENDING_APPROVAL).stream()
                 .anyMatch(t -> t.to() == current);
-        if (current == ApprovalState.PENDING_APPROVAL || reachableFromPendingApproval) {
+        boolean neverPassedThroughPendingApproval = current == ApprovalState.APPROVED && currentVersion <= 1;
+        if (reachableFromPendingApproval && !neverPassedThroughPendingApproval) {
             return new ConcurrentStateChangeException(requestId, current);
         }
         return new InvalidStateTransitionException(requestId, current, action);
