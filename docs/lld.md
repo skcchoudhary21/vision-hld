@@ -15,7 +15,7 @@ stateDiagram-v2
     PENDING_APPROVAL --> EXPIRED: expire [sla_expired]
 ```
 
-## Transfer Release Lifecycle (Transfer Service)
+## Transfer Release Lifecycle (Banking Service)
 
 ```mermaid
 stateDiagram-v2
@@ -74,7 +74,7 @@ Java registry looked up by name — no expression language, no runtime reconfigu
 ## Policy Contract
 
 `PolicyResolver.resolve(amountMinorUnits) -> ApprovalPolicy{requiredApprovals, eligibleRoles,
-makerCanApprove}` — resolved once in Transfer at submission, frozen into the engine's
+makerCanApprove}` — resolved once in Banking Service at submission, frozen into the engine's
 `policy_snapshot` (JSONB), never re-resolved; a later policy change never re-judges an
 in-flight request.
 
@@ -111,7 +111,7 @@ actor_id)`)
 `reject`/`cancel` share this shape (`ActorCommandDto`/`ApprovalResponseDto`/`ErrorResponseDto`);
 `GET /approvals/{id}` returns `ApprovalResponseDto`.
 
-**`POST /transfers`** (Transfer; header `Idempotency-Key`) — creates and submits in one call.
+**`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call.
 ```json
 // Request
 { "makerId": "maker-1", "fromAccount": "ACC-1", "toAccount": "ACC-2",
@@ -150,7 +150,7 @@ processed_event(event_id PK, processed_at)
 
 ```mermaid
 sequenceDiagram
-    participant T as Transfer Service
+    participant T as Banking Service
     participant E as Approval Engine
     participant R as Outbox Relay
     T->>E: POST /approvals (Idempotency-Key)
@@ -226,7 +226,7 @@ decisions is an aggregate read the guarded UPDATE alone can't protect. Evidence:
 | Failure | Behavior |
 |---|---|
 | Engine unreachable during `submit()` | Fails synchronously; retry with same `Idempotency-Key` |
-| Transfer unreachable during approve/reject/cancel | Engine still transitions/audits; only delivery delays |
+| Banking Service unreachable during approve/reject/cancel | Engine still transitions/audits; only delivery delays |
 | Relay crashes mid-publish | Row stays `claimed_at`-set; reclaimed after 30s |
 | Duplicate event delivery | `processed_event(event_id)` dedupe — no-op replay |
 | Core banking release fails | Stays `RELEASE_PENDING`, retried with same `transferId` |

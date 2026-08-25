@@ -1,9 +1,9 @@
-package com.visionbank.transfer.service;
+package com.visionbank.banking.service;
 
-import com.visionbank.transfer.corebanking.CoreBankingClient;
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.domain.TransferState;
-import com.visionbank.transfer.repository.TransferRepository;
+import com.visionbank.banking.corebanking.CoreBankingClient;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.domain.TransferState;
+import com.visionbank.banking.repository.TransferRepository;
 import org.springframework.stereotype.Service;
 
 @Service

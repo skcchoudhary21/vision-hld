@@ -1,4 +1,4 @@
-package com.visionbank.transfer.domain;
+package com.visionbank.banking.domain;
 
 import jakarta.persistence.*;
 import lombok.Getter;

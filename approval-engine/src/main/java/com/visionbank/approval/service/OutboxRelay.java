@@ -25,7 +25,7 @@ public class OutboxRelay {
     private final String webhookUrl;
 
     public OutboxRelay(OutboxClaimService claimService,
-                        @Value("${transfer-service.webhook-url}") String webhookUrl) {
+                        @Value("${banking-service.webhook-url}") String webhookUrl) {
         this.claimService = claimService;
         this.webhookUrl = webhookUrl;
         HttpClient httpClient = HttpClient.newBuilder()

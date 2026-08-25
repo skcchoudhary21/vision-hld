@@ -1,4 +1,4 @@
-package com.visionbank.transfer.corebanking;
+package com.visionbank.banking.corebanking;
 
 import org.springframework.stereotype.Component;
 

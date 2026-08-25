@@ -1,4 +1,4 @@
-package com.visionbank.transfer.approval;
+package com.visionbank.banking.approval;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;

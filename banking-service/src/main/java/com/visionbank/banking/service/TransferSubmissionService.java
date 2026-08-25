@@ -1,14 +1,14 @@
-package com.visionbank.transfer.service;
+package com.visionbank.banking.service;
 
-import com.visionbank.transfer.approval.ApprovalEngineClient;
-import com.visionbank.transfer.approval.CreateWorkflowRequest;
-import com.visionbank.transfer.approval.WorkflowResponse;
-import com.visionbank.transfer.corebanking.CoreBankingClient;
-import com.visionbank.transfer.corebanking.ValidationResult;
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.policy.ApprovalPolicy;
-import com.visionbank.transfer.policy.PolicyResolver;
-import com.visionbank.transfer.repository.TransferRepository;
+import com.visionbank.banking.approval.ApprovalEngineClient;
+import com.visionbank.banking.approval.CreateWorkflowRequest;
+import com.visionbank.banking.approval.WorkflowResponse;
+import com.visionbank.banking.corebanking.CoreBankingClient;
+import com.visionbank.banking.corebanking.ValidationResult;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.policy.ApprovalPolicy;
+import com.visionbank.banking.policy.PolicyResolver;
+import com.visionbank.banking.repository.TransferRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;

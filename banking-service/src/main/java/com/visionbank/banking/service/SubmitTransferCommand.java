@@ -1,3 +1,3 @@
-package com.visionbank.transfer.service;
+package com.visionbank.banking.service;
 
 public record SubmitTransferCommand(String makerId, String fromAccount, String toAccount, long amountMinorUnits, String currency) {}

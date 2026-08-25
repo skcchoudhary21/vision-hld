@@ -33,7 +33,7 @@ class OutboxRelayTest {
         registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("transfer-service.webhook-url", () -> "http://localhost:9091/internal/events");
+        registry.add("banking-service.webhook-url", () -> "http://localhost:9091/internal/events");
     }
 
     @Autowired OutboxRelay relay;
@@ -77,7 +77,7 @@ class OutboxRelayTest {
     }
 
     @Test
-    void leavesEventUnpublishedWhenTransferServiceIsDown() {
+    void leavesEventUnpublishedWhenBankingServiceIsDown() {
         wireMock.stubFor(post(urlEqualTo("/internal/events")).willReturn(serverError()));
         OutboxEvent event = unpublishedEvent("relay-2");
 

@@ -1,5 +1,5 @@
-package com.visionbank.transfer.web.dto;
+package com.visionbank.banking.web.dto;
 
-import com.visionbank.transfer.domain.TransferState;
+import com.visionbank.banking.domain.TransferState;
 
 public record TransferResponseDto(String transferId, TransferState state) {}

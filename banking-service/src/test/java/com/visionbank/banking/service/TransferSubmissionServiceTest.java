@@ -1,9 +1,9 @@
-package com.visionbank.transfer.service;
+package com.visionbank.banking.service;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.domain.TransferState;
-import com.visionbank.transfer.repository.TransferRepository;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.domain.TransferState;
+import com.visionbank.banking.repository.TransferRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

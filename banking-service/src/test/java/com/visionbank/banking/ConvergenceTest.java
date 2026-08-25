@@ -1,10 +1,10 @@
-package com.visionbank.transfer;
+package com.visionbank.banking;
 
-import com.visionbank.transfer.approval.ApprovalEventListener;
-import com.visionbank.transfer.approval.IncomingEvent;
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.domain.TransferState;
-import com.visionbank.transfer.repository.TransferRepository;
+import com.visionbank.banking.approval.ApprovalEventListener;
+import com.visionbank.banking.approval.IncomingEvent;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.domain.TransferState;
+import com.visionbank.banking.repository.TransferRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;

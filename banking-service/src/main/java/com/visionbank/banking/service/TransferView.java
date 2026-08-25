@@ -1,5 +1,5 @@
-package com.visionbank.transfer.service;
+package com.visionbank.banking.service;
 
-import com.visionbank.transfer.domain.TransferState;
+import com.visionbank.banking.domain.TransferState;
 
 public record TransferView(String transferId, TransferState state) {}

@@ -1,11 +1,11 @@
-package com.visionbank.transfer.approval;
+package com.visionbank.banking.approval;
 
-import com.visionbank.transfer.domain.ProcessedEvent;
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.domain.TransferState;
-import com.visionbank.transfer.repository.ProcessedEventRepository;
-import com.visionbank.transfer.repository.TransferRepository;
-import com.visionbank.transfer.service.ReleaseService;
+import com.visionbank.banking.domain.ProcessedEvent;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.domain.TransferState;
+import com.visionbank.banking.repository.ProcessedEventRepository;
+import com.visionbank.banking.repository.TransferRepository;
+import com.visionbank.banking.service.ReleaseService;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 

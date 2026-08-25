@@ -2,7 +2,7 @@
 
 ## Thesis
 
-Two independently deployable services, hard ownership split: **Transfer Service owns what a
+Two independently deployable services, hard ownership split: **Banking Service owns what a
 transfer means** (validation, policy resolution, release orchestration); **Approval Engine
 owns how an approval progresses** (generic maker-checker workflow, state, concurrency, audit,
 expiry). Neither writes the other's database — they coordinate over sync REST commands and an
@@ -15,7 +15,7 @@ and the two Spring Boot services.
 
 ```mermaid
 flowchart LR
-    User["Corporate banking user"] -->|"REST"| TS["Transfer Service :8080"]
+    User["Corporate banking user"] -->|"REST"| TS["Banking Service :8080"]
     TS -->|"POST /approvals (sync, Idempotency-Key)"| AE["Approval Engine :8081"]
     AE -.->|"outbox relay: POST /internal/events (async, at-least-once)"| TS
     TS -->|"REST (validate, release)"| CB["CoreBankingClient\n(stub, in-process)"]
@@ -30,28 +30,32 @@ service — omitted here; doesn't change the ownership or consistency model.
 
 | Concern | Owner |
 |---|---|
-| Transfer semantics, validation, duplicate detection | Transfer |
-| Policy resolution (threshold → approvals required) | Transfer |
+| Transfer semantics, validation, duplicate detection | Banking |
+| Policy resolution (threshold → approvals required) | Banking |
 | Policy snapshot persistence | Approval Engine |
 | Workflow state, guards, concurrency | Approval Engine |
 | Audit, SLA expiry, outbox | Approval Engine |
-| Release orchestration + release idempotency | Transfer |
+| Release orchestration + release idempotency | Banking |
 | Balance/limit authority, money movement | Core Banking (stub) |
+
+`Core Banking (stub)` is a further-back, stubbed ledger/settlement dependency — not the
+`Banking Service` above it; the naming mirrors the real digital-banking-in-front-of-core-banking
+pattern deliberately.
 
 ## Communication & Failure Behavior
 
 | Flow | Pattern | If unavailable |
 |---|---|---|
-| Client → Transfer | REST sync | Fails fast, retryable |
-| Transfer → Engine (create) | REST sync + `Idempotency-Key` | Retry same key, no duplicate workflow |
-| Engine → Transfer (lifecycle events) | Outbox + polling relay | Event durable in DB, relay retries |
-| Transfer → Core Banking (release) | REST sync, idempotent by `transferId` | Stays `RELEASE_PENDING`, retried |
+| Client → Banking | REST sync | Fails fast, retryable |
+| Banking → Engine (create) | REST sync + `Idempotency-Key` | Retry same key, no duplicate workflow |
+| Engine → Banking (lifecycle events) | Outbox + polling relay | Event durable in DB, relay retries |
+| Banking → Core Banking (release) | REST sync, idempotent by `transferId` | Stays `RELEASE_PENDING`, retried |
 
 **Consistency:** strong/transactional within each service; **eventually consistent across the
 boundary** — no distributed transaction, outbox is the seam that makes partial failure safe.
 Resilience is asymmetric by design: Engine down breaks `submit()` synchronously (blocking call
-on the critical path); Transfer down does **not** break approve/reject/cancel — the engine's
-state machine never depends on Transfer's reachability, only async delivery does.
+on the critical path); Banking down does **not** break approve/reject/cancel — the engine's
+state machine never depends on Banking's reachability, only async delivery does.
 
 ## NFRs
 

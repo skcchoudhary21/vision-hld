@@ -1,6 +1,6 @@
-package com.visionbank.transfer.web;
+package com.visionbank.banking.web;
 
-import com.visionbank.transfer.service.ValidationFailedException;
+import com.visionbank.banking.service.ValidationFailedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;

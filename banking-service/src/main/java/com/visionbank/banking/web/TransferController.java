@@ -1,12 +1,12 @@
-package com.visionbank.transfer.web;
+package com.visionbank.banking.web;
 
-import com.visionbank.transfer.domain.Transfer;
-import com.visionbank.transfer.repository.TransferRepository;
-import com.visionbank.transfer.service.SubmitTransferCommand;
-import com.visionbank.transfer.service.TransferSubmissionService;
-import com.visionbank.transfer.service.TransferView;
-import com.visionbank.transfer.web.dto.SubmitTransferDto;
-import com.visionbank.transfer.web.dto.TransferResponseDto;
+import com.visionbank.banking.domain.Transfer;
+import com.visionbank.banking.repository.TransferRepository;
+import com.visionbank.banking.service.SubmitTransferCommand;
+import com.visionbank.banking.service.TransferSubmissionService;
+import com.visionbank.banking.service.TransferView;
+import com.visionbank.banking.web.dto.SubmitTransferDto;
+import com.visionbank.banking.web.dto.TransferResponseDto;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;

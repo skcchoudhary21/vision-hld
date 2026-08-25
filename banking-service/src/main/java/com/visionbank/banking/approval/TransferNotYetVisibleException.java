@@ -1,4 +1,4 @@
-package com.visionbank.transfer.approval;
+package com.visionbank.banking.approval;
 
 public class TransferNotYetVisibleException extends RuntimeException {
     public TransferNotYetVisibleException(String transferId) {

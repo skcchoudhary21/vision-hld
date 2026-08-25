@@ -1,6 +1,6 @@
-package com.visionbank.transfer.approval;
+package com.visionbank.banking.approval;
 
-import com.visionbank.transfer.policy.ApprovalPolicy;
+import com.visionbank.banking.policy.ApprovalPolicy;
 
 import java.time.Instant;
 

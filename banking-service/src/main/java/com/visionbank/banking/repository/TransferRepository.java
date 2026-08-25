@@ -1,6 +1,6 @@
-package com.visionbank.transfer.repository;
+package com.visionbank.banking.repository;
 
-import com.visionbank.transfer.domain.Transfer;
+import com.visionbank.banking.domain.Transfer;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;

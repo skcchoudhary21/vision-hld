@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "Waiting for transfer-service to be reachable..."
+echo "Waiting for banking-service to be reachable..."
 for i in $(seq 1 30); do
   if curl -sf http://localhost:8080/transfers/does-not-exist -o /dev/null -w '%{http_code}' | grep -q 404; then
     break

@@ -1,4 +1,4 @@
-package com.visionbank.transfer.policy;
+package com.visionbank.banking.policy;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;

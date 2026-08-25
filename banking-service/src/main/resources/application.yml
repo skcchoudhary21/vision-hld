@@ -2,11 +2,11 @@ server:
   port: 8080
 spring:
   application:
-    name: transfer-service
+    name: banking-service
   datasource:
-    url: jdbc:postgresql://localhost:5432/transfer
-    username: transfer
-    password: transfer
+    url: jdbc:postgresql://localhost:5432/banking
+    username: banking
+    password: banking
   jpa:
     hibernate:
       ddl-auto: update

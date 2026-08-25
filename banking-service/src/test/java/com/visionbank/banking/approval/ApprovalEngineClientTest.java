@@ -1,7 +1,7 @@
-package com.visionbank.transfer.approval;
+package com.visionbank.banking.approval;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.visionbank.transfer.policy.ApprovalPolicy;
+import com.visionbank.banking.policy.ApprovalPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

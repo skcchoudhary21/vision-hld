@@ -20,18 +20,18 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/approval?stringtype=unspecified
       SPRING_DATASOURCE_USERNAME: approval
       SPRING_DATASOURCE_PASSWORD: approval
-      TRANSFER-SERVICE_WEBHOOK-URL: http://transfer-service:8080/internal/events
+      BANKING-SERVICE_WEBHOOK-URL: http://banking-service:8080/internal/events
     depends_on:
       postgres:
         condition: service_healthy
 
-  transfer-service:
-    build: ./transfer-service
+  banking-service:
+    build: ./banking-service
     ports: ["8080:8080"]
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transfer
-      SPRING_DATASOURCE_USERNAME: transfer
-      SPRING_DATASOURCE_PASSWORD: transfer
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/banking
+      SPRING_DATASOURCE_USERNAME: banking
+      SPRING_DATASOURCE_PASSWORD: banking
       APPROVAL-ENGINE_BASE-URL: http://approval-engine:8081
     depends_on:
       postgres:

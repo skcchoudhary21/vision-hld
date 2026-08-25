@@ -1,4 +1,4 @@
-package com.visionbank.transfer.web.dto;
+package com.visionbank.banking.web.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;

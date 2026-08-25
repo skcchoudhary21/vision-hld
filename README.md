@@ -11,7 +11,7 @@ HLD/LLD: `docs/hld.md`, `docs/lld.md`.
 docker compose up --build
 ```
 
-Transfer Service: http://localhost:8080. Approval Engine: http://localhost:8081.
+Banking Service: http://localhost:8080. Approval Engine: http://localhost:8081.
 
 Submit a transfer:
 ```bash
@@ -21,13 +21,13 @@ curl -X POST http://localhost:8080/transfers \
   -d '{"makerId":"maker-1","fromAccount":"ACC-FUNDED","toAccount":"ACC-DEST","amountMinorUnits":100000,"currency":"AED"}'
 ```
 Amounts under 5,000.00 auto-release; 5,000–50,000 need 1 checker; 50,000+
-need 2. See `docs/superpowers/specs/.../` §8 or `transfer-service`'s
+need 2. See `docs/superpowers/specs/.../` §8 or `banking-service`'s
 `PolicyResolver` for the exact thresholds.
 
 Run each service's tests independently:
 ```bash
 cd approval-engine && ./gradlew test
-cd transfer-service && ./gradlew test
+cd banking-service && ./gradlew test
 ```
 
 ## Key design decisions
@@ -44,7 +44,7 @@ cd transfer-service && ./gradlew test
   state = ? AND version = ?`. Exactly one caller wins; the loser's entire
   transaction (decision, audit, outbox) rolls back.
 - Core Banking is stubbed behind a `CoreBankingClient` interface inside
-  Transfer Service, per the assignment's explicit allowance — not a third
+  Banking Service, per the assignment's explicit allowance — not a third
   deployable service.
 
 ## What I'd do differently with more time
@@ -64,6 +64,6 @@ cd transfer-service && ./gradlew test
 - Error handling and rollback in the docker-compose Postgres init script
   (`docker-compose-postgres-init/01-init.sql`) — currently if a statement
   fails partway through (e.g., creating the `approval` role/database fails
-  after `transfer`'s succeeded), the script continues silently without rolling
+  after `banking`'s succeeded), the script continues silently without rolling
   back or failing loud, risking an inconsistent setup on partial success.
 - The idempotency promise in the design doc was narrower in practice than first written: retrying with the same actor after *their own* decision completed quorum returns `409 CONCURRENT_STATE_CHANGE` rather than replaying the decided state (the terminal-state check runs first) — defensible REST behavior, but worth a documented exception rather than a broader promise.

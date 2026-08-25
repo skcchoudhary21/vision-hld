@@ -1,8 +1,8 @@
-package com.visionbank.transfer.web;
+package com.visionbank.banking.web;
 
 import tools.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.visionbank.transfer.web.dto.SubmitTransferDto;
+import com.visionbank.banking.web.dto.SubmitTransferDto;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

@@ -1,8 +1,8 @@
-package com.visionbank.transfer.web;
+package com.visionbank.banking.web;
 
-import com.visionbank.transfer.approval.ApprovalEventListener;
-import com.visionbank.transfer.approval.IncomingEvent;
-import com.visionbank.transfer.web.dto.IncomingEventDto;
+import com.visionbank.banking.approval.ApprovalEventListener;
+import com.visionbank.banking.approval.IncomingEvent;
+import com.visionbank.banking.web.dto.IncomingEventDto;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
