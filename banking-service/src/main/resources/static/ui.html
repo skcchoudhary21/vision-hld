@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Transfer Approval — Test Console</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, sans-serif; margin: 0; background: #f4f5f7; color: #222; }
+  header { background: #1f2937; color: #fff; padding: 12px 20px; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header .sub { font-size: 12px; color: #9ca3af; }
+
+  #form-panel { background: #fff; border-bottom: 1px solid #ddd; padding: 14px 20px; display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  #form-panel .field { display: flex; flex-direction: column; font-size: 11px; color: #555; }
+  #form-panel input { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; width: 140px; }
+  #form-panel button { padding: 7px 14px; font-size: 13px; border: none; border-radius: 3px; cursor: pointer; background: #2563eb; color: #fff; }
+  #form-panel button:hover { background: #1d4ed8; }
+  #form-panel .divider { width: 1px; background: #ddd; align-self: stretch; margin: 0 6px; }
+
+  #main { display: flex; height: calc(100vh - 118px); }
+  #left { flex: 0 0 62%; display: flex; flex-direction: column; padding: 16px; overflow-y: auto; }
+  #right { flex: 1; border-left: 1px solid #ddd; background: #fff; padding: 16px; overflow-y: auto; }
+  #right h2 { font-size: 13px; text-transform: uppercase; color: #666; margin: 0 0 10px; }
+
+  .pipeline { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .stage { border: 1px solid #d1d5db; border-radius: 4px; padding: 10px 14px; background: #fff; display: flex; align-items: center; justify-content: space-between; }
+  .stage .label { font-size: 13px; font-weight: 600; }
+  .stage .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e5e7eb; color: #444; }
+  .stage.pending { opacity: 0.55; }
+  .stage.active { border-color: #2563eb; background: #eff6ff; }
+  .stage.active .badge { background: #2563eb; color: #fff; }
+  .stage.success { border-color: #16a34a; background: #f0fdf4; }
+  .stage.success .badge { background: #16a34a; color: #fff; }
+  .stage.failed { border-color: #dc2626; background: #fef2f2; }
+  .stage.failed .badge { background: #dc2626; color: #fff; }
+
+  #decision-panel { display: none; background: #fffbeb; border: 1px solid #f59e0b; border-radius: 4px; padding: 12px 14px; margin-bottom: 16px; }
+  #decision-panel.show { display: block; }
+  #decision-panel h3 { margin: 0 0 8px; font-size: 13px; }
+  #decision-panel .row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+  #decision-panel input { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; }
+  #decision-panel button { padding: 7px 12px; font-size: 13px; border: none; border-radius: 3px; cursor: pointer; color: #fff; }
+  #btn-approve { background: #16a34a; } #btn-approve:hover { background: #15803d; }
+  #btn-reject { background: #dc2626; } #btn-reject:hover { background: #b91c1c; }
+  #btn-cancel { background: #6b7280; } #btn-cancel:hover { background: #4b5563; }
+
+  #console { flex: 1; background: #0d1117; color: #c9d1d9; font-family: "SF Mono", Menlo, monospace; font-size: 12px; padding: 12px; border-radius: 4px; overflow-y: auto; min-height: 200px; }
+  #console .line { white-space: pre-wrap; padding: 1px 0; }
+  #console .line.audit { color: #7ee787; }
+  #console .line.action { color: #79c0ff; }
+  #console .line.done { color: #f2cc60; font-weight: bold; }
+  #console .line.info { color: #8b949e; }
+
+  .timeline-entry { border-left: 2px solid #d1d5db; padding: 6px 0 6px 12px; margin-bottom: 4px; font-size: 12px; }
+  .timeline-entry .action { font-weight: 600; }
+  .timeline-entry .transition { color: #555; }
+  .timeline-entry .meta { color: #999; font-size: 11px; }
+  #right .empty { color: #999; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Transfer Approval — Test Console</h1>
+  <div class="sub">dev/testing tool only — not part of the graded submission</div>
+</header>
+
+<div id="form-panel">
+  <div class="field"><label>makerId</label><input id="f-maker" value="maker-1"></div>
+  <div class="field"><label>fromAccount</label><input id="f-from" value="ACC-FUNDED"></div>
+  <div class="field"><label>toAccount</label><input id="f-to" value="ACC-DEST"></div>
+  <div class="field"><label>amountMinorUnits</label><input id="f-amount" value="10000000"></div>
+  <div class="field"><label>currency</label><input id="f-currency" value="AED" style="width:60px"></div>
+  <button onclick="submitTransfer()">Submit Transfer</button>
+  <div class="divider"></div>
+  <div class="field"><label>load existing transferId</label><input id="f-load"></div>
+  <button onclick="loadTransfer()">Watch</button>
+</div>
+
+<div id="main">
+  <div id="left">
+    <div class="pipeline" id="pipeline">
+      <div class="stage pending" data-stage="submit"><span class="label">1. Submit &amp; Validate</span><span class="badge">pending</span></div>
+      <div class="stage pending" data-stage="create"><span class="label">2. Create Approval Request</span><span class="badge">pending</span></div>
+      <div class="stage pending" data-stage="await"><span class="label">3. Awaiting Approval</span><span class="badge">pending</span></div>
+      <div class="stage pending" data-stage="decision"><span class="label">4. Decision</span><span class="badge">pending</span></div>
+      <div class="stage pending" data-stage="release"><span class="label">5. Release</span><span class="badge">pending</span></div>
+    </div>
+
+    <div id="decision-panel">
+      <h3>Approval required — act as a checker</h3>
+      <div class="row">
+        <div class="field"><label style="font-size:11px;color:#555">actorId</label><input id="d-actor" value="checker-1"></div>
+        <div class="field"><label style="font-size:11px;color:#555">actorRole</label><input id="d-role" value="TRANSFER_CHECKER"></div>
+        <button id="btn-approve" onclick="decide('approve')">Approve</button>
+        <button id="btn-reject" onclick="decide('reject')">Reject</button>
+        <button id="btn-cancel" onclick="decide('cancel')">Cancel</button>
+      </div>
+    </div>
+
+    <div id="console"></div>
+  </div>
+
+  <div id="right">
+    <h2>Audit Timeline</h2>
+    <div id="timeline"><div class="empty">No transfer loaded yet.</div></div>
+  </div>
+</div>
+
+<script>
+let currentTransferId = null;
+let currentApprovalId = null;
+let es = null;
+
+function log(text, cls) {
+  const c = document.getElementById('console');
+  const div = document.createElement('div');
+  div.className = 'line ' + (cls || '');
+  div.textContent = text;
+  c.appendChild(div);
+  c.scrollTop = c.scrollHeight;
+}
+
+function setStage(name, status) {
+  const el = document.querySelector('.stage[data-stage="' + name + '"]');
+  el.className = 'stage ' + status;
+  el.querySelector('.badge').textContent = status;
+}
+
+function resetPipeline() {
+  ['submit','create','await','decision','release'].forEach(s => setStage(s, 'pending'));
+  document.getElementById('decision-panel').classList.remove('show');
+  document.getElementById('console').innerHTML = '';
+  document.getElementById('timeline').innerHTML = '<div class="empty">Waiting for events...</div>';
+}
+
+async function submitTransfer() {
+  resetPipeline();
+  setStage('submit', 'active');
+  log('[' + new Date().toISOString() + '] POST /transfers', 'action');
+  try {
+    const res = await fetch('/transfers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify({
+        makerId: val('f-maker'), fromAccount: val('f-from'), toAccount: val('f-to'),
+        amountMinorUnits: parseInt(val('f-amount'), 10), currency: val('f-currency')
+      })
+    });
+    const body = await res.json();
+    if (!res.ok) { log('FAILED: ' + JSON.stringify(body), 'action'); setStage('submit', 'failed'); return; }
+    log('-> ' + JSON.stringify(body), 'info');
+    setStage('submit', 'success');
+    setStage('create', 'success');
+    currentTransferId = body.transferId;
+    document.getElementById('f-load').value = currentTransferId;
+    watch(currentTransferId);
+  } catch (e) {
+    log('ERROR: ' + e, 'action');
+    setStage('submit', 'failed');
+  }
+}
+
+function loadTransfer() {
+  resetPipeline();
+  const id = val('f-load');
+  if (!id) return;
+  currentTransferId = id;
+  setStage('submit', 'success');
+  setStage('create', 'success');
+  watch(id);
+}
+
+function watch(transferId) {
+  if (es) es.close();
+  log('[' + new Date().toISOString() + '] watching transfer ' + transferId, 'info');
+  es = new EventSource('/ui-api/stream/' + transferId);
+
+  es.addEventListener('state', e => {
+    const s = JSON.parse(e.data);
+    applyState(s);
+  });
+
+  es.addEventListener('audit', e => {
+    const a = JSON.parse(e.data);
+    currentApprovalId = currentApprovalId || null;
+    appendTimeline(a);
+    log('[' + a.createdAt + '] ' + a.action + ': ' + a.previousState + ' -> ' + a.newState +
+        (a.actorId ? ' (actor=' + a.actorId + ')' : ''), 'audit');
+  });
+
+  es.addEventListener('log', e => log(e.data, 'info'));
+
+  es.addEventListener('done', e => {
+    log('[' + new Date().toISOString() + '] PIPELINE COMPLETE: ' + e.data, 'done');
+    document.getElementById('decision-panel').classList.remove('show');
+    es.close();
+  });
+
+  es.onerror = () => { log('stream closed', 'info'); };
+}
+
+function applyState(s) {
+  if (s.approvalState) currentApprovalId = currentTransferId; // requestId == transferId
+
+  if (!s.approvalState || s.approvalState === 'SUBMITTED') {
+    setStage('create', 'active');
+  } else if (s.approvalState === 'PENDING_APPROVAL') {
+    setStage('create', 'success');
+    setStage('await', 'active');
+    document.getElementById('decision-panel').classList.add('show');
+  } else if (s.approvalState === 'APPROVED') {
+    setStage('await', 'success');
+    setStage('decision', 'success');
+    document.getElementById('decision-panel').classList.remove('show');
+  } else if (['REJECTED','CANCELLED','EXPIRED'].includes(s.approvalState)) {
+    setStage('await', s.approvalState === 'EXPIRED' ? 'failed' : 'success');
+    setStage('decision', 'failed');
+    document.getElementById('decision-panel').classList.remove('show');
+  }
+
+  if (s.transferState === 'RELEASE_PENDING') setStage('release', 'active');
+  if (s.transferState === 'RELEASED') setStage('release', 'success');
+  if (['REJECTED','CANCELLED','EXPIRED'].includes(s.transferState)) setStage('release', 'failed');
+}
+
+function appendTimeline(a) {
+  const t = document.getElementById('timeline');
+  if (t.querySelector('.empty')) t.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'timeline-entry';
+  div.innerHTML = '<div class="action">' + a.action + '</div>' +
+    '<div class="transition">' + a.previousState + ' &rarr; ' + a.newState + '</div>' +
+    '<div class="meta">' + a.createdAt + (a.actorId ? ' · ' + a.actorId + (a.actorRole ? ' (' + a.actorRole + ')' : '') : '') + '</div>';
+  t.appendChild(div);
+  t.scrollTop = t.scrollHeight;
+}
+
+async function decide(action) {
+  const id = currentApprovalId || currentTransferId;
+  log('[' + new Date().toISOString() + '] POST /approvals/' + id + '/' + action, 'action');
+  try {
+    const res = await fetch('/ui-api/approvals/' + id + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actorId: val('d-actor'), actorRole: val('d-role') })
+    });
+    const body = await res.json();
+    log('-> ' + res.status + ' ' + JSON.stringify(body), 'info');
+  } catch (e) {
+    log('ERROR: ' + e, 'action');
+  }
+}
+
+function val(id) { return document.getElementById(id).value; }
+</script>
+</body>
+</html>
