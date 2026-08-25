@@ -18,4 +18,20 @@ public class WorkflowConfig {
         definition.transitions().forEach(t -> guards.get(t.guard()));
         return definition;
     }
+
+    @Bean
+    public WorkflowRegistry workflowRegistry(GuardRegistry guards) {
+        WorkflowRegistry registry = new WorkflowRegistry("classpath:workflow/definitions/*.yaml", new YamlWorkflowLoader());
+        // Same startup fail-fast as before Task 2: every guard name referenced by every
+        // loaded workflow must resolve, not just the one workflow that used to exist.
+        for (String id : new String[]{"transfer-approval", "privileged-access"}) {
+            registry.get(id).transitions().forEach(t -> guards.get(t.guard()));
+        }
+        return registry;
+    }
+
+    @Bean
+    public WorkflowSelector workflowSelector(WorkflowRegistry registry) {
+        return new WorkflowSelector("workflow/workflow-selection.yaml", registry);
+    }
 }

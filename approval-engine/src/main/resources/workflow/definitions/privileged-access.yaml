@@ -1,0 +1,67 @@
+name: privileged-access
+version: 1
+initialState: SUBMITTED
+terminalStates: [APPROVED, REJECTED, EXPIRED]
+
+states:
+  - id: SUBMITTED
+    label: Submitted
+  - id: SECURITY_REVIEW
+    label: Security Review
+  - id: MANAGER_APPROVAL
+    label: Manager Approval
+  - id: COMPLIANCE_REVIEW
+    label: Compliance Review
+  - id: APPROVED
+    label: Approved
+  - id: REJECTED
+    label: Rejected
+  - id: EXPIRED
+    label: Expired
+
+transitions:
+  - name: submit
+    from: SUBMITTED
+    to: SECURITY_REVIEW
+    guard: approval_required
+  - name: approve
+    from: SECURITY_REVIEW
+    to: MANAGER_APPROVAL
+    guard: approvals_satisfied
+  - name: approve
+    from: MANAGER_APPROVAL
+    to: COMPLIANCE_REVIEW
+    guard: approvals_satisfied
+  - name: approve
+    from: COMPLIANCE_REVIEW
+    to: APPROVED
+    guard: approvals_satisfied
+  - name: reject
+    from: SECURITY_REVIEW
+    to: REJECTED
+    guard: actor_is_eligible_checker
+  - name: reject
+    from: MANAGER_APPROVAL
+    to: REJECTED
+    guard: actor_is_eligible_checker
+  - name: reject
+    from: COMPLIANCE_REVIEW
+    to: REJECTED
+    guard: actor_is_eligible_checker
+  - name: expire
+    from: SECURITY_REVIEW
+    to: EXPIRED
+    guard: sla_expired
+  - name: expire
+    from: MANAGER_APPROVAL
+    to: EXPIRED
+    guard: sla_expired
+  - name: expire
+    from: COMPLIANCE_REVIEW
+    to: EXPIRED
+    guard: sla_expired
+
+events:
+  APPROVED: [ApprovalApproved]
+  REJECTED: [ApprovalRejected]
+  EXPIRED: [ApprovalExpired]

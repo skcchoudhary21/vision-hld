@@ -8,7 +8,7 @@ class WorkflowLoaderTest {
 
     @Test
     void loadsDefinitionFromClasspathYaml() {
-        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
+        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/definitions/transfer-approval.yaml");
 
         assertThat(def.name()).isEqualTo("transfer-approval");
         assertThat(def.initialState()).isEqualTo("SUBMITTED");
@@ -19,7 +19,7 @@ class WorkflowLoaderTest {
 
     @Test
     void transitionsFromSubmittedIncludeAutoApproveAndRequireApproval() {
-        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
+        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/definitions/transfer-approval.yaml");
 
         assertThat(def.transitionsFrom("SUBMITTED"))
                 .extracting(Transition::name)
@@ -28,7 +28,7 @@ class WorkflowLoaderTest {
 
     @Test
     void approveTransitionGuardIsApprovalsSatisfied() {
-        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
+        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/definitions/transfer-approval.yaml");
 
         assertThat(def.byName("approve").guard()).isEqualTo("approvals_satisfied");
         assertThat(def.byName("approve").to()).isEqualTo("APPROVED");
@@ -36,7 +36,7 @@ class WorkflowLoaderTest {
 
     @Test
     void eventsFiresOnlyOnTerminalStates() {
-        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
+        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/definitions/transfer-approval.yaml");
 
         assertThat(def.eventsFor("APPROVED")).containsExactly("ApprovalApproved");
         assertThat(def.eventsFor("PENDING_APPROVAL")).isEmpty();
