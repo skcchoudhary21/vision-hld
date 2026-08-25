@@ -2114,7 +2114,8 @@ class OutboxRelayTest {
         int published = relay.relayOnce();
 
         assertThat(published).isGreaterThanOrEqualTo(1);
-        wireMock.verify(postRequestedFor(urlEqualTo("/internal/events")));
+        wireMock.verify(postRequestedFor(urlEqualTo("/internal/events"))
+                .withHeader("Content-Type", equalTo("application/json")));
         assertThat(outbox.findById(event.getEventId()).get().getPublishedAt()).isNotNull();
     }
 
@@ -2197,6 +2198,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -2241,6 +2243,7 @@ public class OutboxRelay {
                     .uri(webhookUrl)
                     .header("X-Event-Id", event.getEventId())
                     .header("X-Event-Type", event.getEventType())
+                    .contentType(MediaType.APPLICATION_JSON)
                     .body(event.getPayload())
                     .retrieve()
                     .toBodilessEntity()
