@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports: ["5432:5432"]
+    volumes:
+      - ./docker-compose-postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  approval-engine:
+    build: ./approval-engine
+    ports: ["8081:8081"]
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/approval?stringtype=unspecified
+      SPRING_DATASOURCE_USERNAME: approval
+      SPRING_DATASOURCE_PASSWORD: approval
+      TRANSFER-SERVICE_WEBHOOK-URL: http://transfer-service:8080/internal/events
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  transfer-service:
+    build: ./transfer-service
+    ports: ["8080:8080"]
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/transfer
+      SPRING_DATASOURCE_USERNAME: transfer
+      SPRING_DATASOURCE_PASSWORD: transfer
+      APPROVAL-ENGINE_BASE-URL: http://approval-engine:8081
+    depends_on:
+      postgres:
+        condition: service_healthy
+      approval-engine:
+        condition: service_started

@@ -68,7 +68,11 @@ class OutboxRelayTest {
         int published = relay.relayOnce();
 
         assertThat(published).isGreaterThanOrEqualTo(1);
-        wireMock.verify(postRequestedFor(urlEqualTo("/internal/events")));
+        // Content-Type must be application/json: the payload is a raw JSON string, and
+        // RestClient's default StringHttpMessageConverter sends text/plain unless told
+        // otherwise, which the real receiving controller (@RequestBody DTO) rejects with 415.
+        wireMock.verify(postRequestedFor(urlEqualTo("/internal/events"))
+                .withHeader("Content-Type", equalTo("application/json")));
         assertThat(outbox.findById(event.getEventId()).get().getPublishedAt()).isNotNull();
     }
 
