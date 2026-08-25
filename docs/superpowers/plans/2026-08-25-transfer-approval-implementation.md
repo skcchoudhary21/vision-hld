@@ -4263,7 +4263,10 @@ class TransferControllerTest {
     @BeforeEach
     void startStub() {
         engineStub.start();
-        engineStub.stubFor(post(urlEqualTo("/approvals"))
+        // Fully-qualified: the explicit `MockMvcRequestBuilders.post` static import below
+        // shadows WireMock's wildcard-imported `post`, so an unqualified call here resolves
+        // to the wrong (type-incompatible) overload and fails to compile.
+        engineStub.stubFor(com.github.tomakehurst.wiremock.client.WireMock.post(urlEqualTo("/approvals"))
                 .willReturn(okJson("{\"requestId\":\"req-ctrl\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
     }
 
