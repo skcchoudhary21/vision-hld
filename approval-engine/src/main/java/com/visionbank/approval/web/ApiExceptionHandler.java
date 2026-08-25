@@ -1,0 +1,42 @@
+package com.visionbank.approval.web;
+
+import com.visionbank.approval.service.*;
+import com.visionbank.approval.web.dto.ErrorResponseDto;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class ApiExceptionHandler {
+
+    @ExceptionHandler(ConcurrentStateChangeException.class)
+    public ResponseEntity<ErrorResponseDto> handle(ConcurrentStateChangeException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponseDto("CONCURRENT_STATE_CHANGE", e.requestId, e.currentState.name(), null));
+    }
+
+    @ExceptionHandler(InvalidStateTransitionException.class)
+    public ResponseEntity<ErrorResponseDto> handle(InvalidStateTransitionException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponseDto("INVALID_STATE_TRANSITION", e.requestId, e.currentState.name(), e.requestedAction));
+    }
+
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ErrorResponseDto> handle(IdempotencyConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponseDto("IDEMPOTENCY_CONFLICT", null, null, null));
+    }
+
+    @ExceptionHandler(ForbiddenActionException.class)
+    public ResponseEntity<ErrorResponseDto> handle(ForbiddenActionException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new ErrorResponseDto("FORBIDDEN_ACTION", null, null, null));
+    }
+
+    @ExceptionHandler(ApprovalRequestNotFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handle(ApprovalRequestNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponseDto("NOT_FOUND", null, null, null));
+    }
+}
