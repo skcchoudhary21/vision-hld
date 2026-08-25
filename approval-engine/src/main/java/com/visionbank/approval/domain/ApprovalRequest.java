@@ -19,9 +19,8 @@ public class ApprovalRequest {
     @Column(name = "request_type", nullable = false)
     private String requestType;
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "state", nullable = false)
-    private ApprovalState state;
+    private String state;
 
     @Column(name = "version", nullable = false)
     private long version;

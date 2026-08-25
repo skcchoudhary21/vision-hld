@@ -1,7 +1,6 @@
 package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.ApprovalState;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -26,11 +25,11 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
     @Query("UPDATE ApprovalRequest a SET a.state = :newState, a.version = a.version + 1 " +
            "WHERE a.requestId = :requestId AND a.state = :expectedState AND a.version = :expectedVersion")
     int guardedTransition(@Param("requestId") String requestId,
-                           @Param("expectedState") ApprovalState expectedState,
+                           @Param("expectedState") String expectedState,
                            @Param("expectedVersion") long expectedVersion,
-                           @Param("newState") ApprovalState newState);
+                           @Param("newState") String newState);
 
-    List<ApprovalRequest> findByStateAndExpiresAtBefore(ApprovalState state, Instant cutoff);
+    List<ApprovalRequest> findByStateAndExpiresAtBefore(String state, Instant cutoff);
 
     /**
      * Row lock for approve/reject/cancel (Task 5), taken before counting

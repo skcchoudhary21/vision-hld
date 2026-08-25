@@ -1,7 +1,6 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.junit.jupiter.api.Test;
@@ -38,7 +37,7 @@ class ExpirySweeperTest {
         ApprovalRequest r = new ApprovalRequest();
         r.setRequestId(id);
         r.setRequestType("TRANSFER_APPROVAL");
-        r.setState(ApprovalState.PENDING_APPROVAL);
+        r.setState("PENDING_APPROVAL");
         r.setVersion(1L);
         r.setMakerId("maker-1");
         r.setPolicySnapshot(new PolicySnapshot("v1", 1, java.util.List.of("TRANSFER_CHECKER"), false));
@@ -55,7 +54,7 @@ class ExpirySweeperTest {
         int expired = sweeper.sweepOnce();
 
         assertThat(expired).isGreaterThanOrEqualTo(1);
-        assertThat(requests.findByRequestId("expire-1").get().getState()).isEqualTo(ApprovalState.EXPIRED);
+        assertThat(requests.findByRequestId("expire-1").get().getState()).isEqualTo("EXPIRED");
     }
 
     @Test
@@ -66,6 +65,6 @@ class ExpirySweeperTest {
 
         sweeper.sweepOnce();
 
-        assertThat(requests.findByRequestId("expire-2").get().getState()).isEqualTo(ApprovalState.PENDING_APPROVAL);
+        assertThat(requests.findByRequestId("expire-2").get().getState()).isEqualTo("PENDING_APPROVAL");
     }
 }

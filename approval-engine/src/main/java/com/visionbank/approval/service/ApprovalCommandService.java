@@ -68,10 +68,10 @@ public class ApprovalCommandService {
         request.setCreatedAt(Instant.now());
         request.setExpiresAt(cmd.expiresAt());
         request.setVersion(0L);
-        request.setState(ApprovalState.SUBMITTED);
+        request.setState("SUBMITTED");
 
         GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false);
-        Transition initial = workflow.transitionsFrom(ApprovalState.SUBMITTED).stream()
+        Transition initial = workflow.transitionsFrom("SUBMITTED").stream()
                 .filter(t -> guards.get(t.guard()).evaluate(ctx))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("No transition from SUBMITTED satisfied by policy"));
@@ -80,11 +80,11 @@ public class ApprovalCommandService {
         request.setVersion(1L);
         requests.save(request);
 
-        writeAudit(cmd.requestId(), null, null, "SUBMITTED", ApprovalState.SUBMITTED, initial.to());
+        writeAudit(cmd.requestId(), null, null, "SUBMITTED", "SUBMITTED", initial.to());
         // Auto-approved requests emit BOTH events (spec §16) so Transfer's release
         // trigger is always "on ApprovalApproved" — no separate auto-release path.
         writeOutbox(cmd.requestId(), "ApprovalSubmitted");
-        if (initial.to() == ApprovalState.APPROVED) {
+        if (initial.to().equals("APPROVED")) {
             writeOutbox(cmd.requestId(), "ApprovalApproved");
         }
 
@@ -104,7 +104,7 @@ public class ApprovalCommandService {
     public ApprovalRequestView approve(String requestId, String actorId, String actorRole) {
         ApprovalRequest request = loadOrThrow(requestId);
 
-        if (request.getState() != ApprovalState.PENDING_APPROVAL) {
+        if (!request.getState().equals("PENDING_APPROVAL")) {
             throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "approve");
         }
 
@@ -134,25 +134,25 @@ public class ApprovalCommandService {
                 actorId, actorRole, false);
 
         if (!guards.get("approvals_satisfied").evaluate(quorumCtx)) {
-            writeAudit(requestId, actorId, actorRole, "APPROVAL_RECORDED", ApprovalState.PENDING_APPROVAL, ApprovalState.PENDING_APPROVAL);
+            writeAudit(requestId, actorId, actorRole, "APPROVAL_RECORDED", "PENDING_APPROVAL", "PENDING_APPROVAL");
             return toView(request);
         }
 
-        int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.APPROVED);
+        int rows = requests.guardedTransition(requestId, "PENDING_APPROVAL", request.getVersion(), "APPROVED");
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
             throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "approve");
         }
 
-        writeAudit(requestId, actorId, actorRole, "APPROVED", ApprovalState.PENDING_APPROVAL, ApprovalState.APPROVED);
+        writeAudit(requestId, actorId, actorRole, "APPROVED", "PENDING_APPROVAL", "APPROVED");
         writeOutbox(requestId, "ApprovalApproved");
-        return new ApprovalRequestView(requestId, ApprovalState.APPROVED, request.getVersion() + 1);
+        return new ApprovalRequestView(requestId, "APPROVED", request.getVersion() + 1);
     }
 
     @Transactional
     public ApprovalRequestView reject(String requestId, String actorId, String actorRole) {
         ApprovalRequest request = loadOrThrow(requestId);
-        if (request.getState() != ApprovalState.PENDING_APPROVAL) {
+        if (!request.getState().equals("PENDING_APPROVAL")) {
             throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "reject");
         }
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false);
@@ -160,20 +160,20 @@ public class ApprovalCommandService {
             throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);
         }
 
-        int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.REJECTED);
+        int rows = requests.guardedTransition(requestId, "PENDING_APPROVAL", request.getVersion(), "REJECTED");
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
             throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "reject");
         }
-        writeAudit(requestId, actorId, actorRole, "REJECTED", ApprovalState.PENDING_APPROVAL, ApprovalState.REJECTED);
+        writeAudit(requestId, actorId, actorRole, "REJECTED", "PENDING_APPROVAL", "REJECTED");
         writeOutbox(requestId, "ApprovalRejected");
-        return new ApprovalRequestView(requestId, ApprovalState.REJECTED, request.getVersion() + 1);
+        return new ApprovalRequestView(requestId, "REJECTED", request.getVersion() + 1);
     }
 
     @Transactional
     public ApprovalRequestView cancel(String requestId, String actorId) {
         ApprovalRequest request = loadOrThrow(requestId);
-        if (request.getState() != ApprovalState.PENDING_APPROVAL) {
+        if (!request.getState().equals("PENDING_APPROVAL")) {
             throw classifyRaceOrIllegal(requestId, request.getState(), request.getVersion(), "cancel");
         }
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false);
@@ -181,14 +181,14 @@ public class ApprovalCommandService {
             throw new ForbiddenActionException("Only the maker can cancel request " + requestId);
         }
 
-        int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, request.getVersion(), ApprovalState.CANCELLED);
+        int rows = requests.guardedTransition(requestId, "PENDING_APPROVAL", request.getVersion(), "CANCELLED");
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
             throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "cancel");
         }
-        writeAudit(requestId, actorId, "MAKER", "CANCELLED", ApprovalState.PENDING_APPROVAL, ApprovalState.CANCELLED);
+        writeAudit(requestId, actorId, "MAKER", "CANCELLED", "PENDING_APPROVAL", "CANCELLED");
         writeOutbox(requestId, "ApprovalCancelled");
-        return new ApprovalRequestView(requestId, ApprovalState.CANCELLED, request.getVersion() + 1);
+        return new ApprovalRequestView(requestId, "CANCELLED", request.getVersion() + 1);
     }
 
     // Row-locking on purpose (spec §12 amendment): approve/reject/cancel all
@@ -215,14 +215,14 @@ public class ApprovalCommandService {
      * and only a later real PENDING_APPROVAL transition bumps it again, so version 1
      * here means this row auto-approved and never passed through PENDING_APPROVAL.
      */
-    private RuntimeException classifyRaceOrIllegal(String requestId, ApprovalState current, long currentVersion, String action) {
-        if (current == ApprovalState.PENDING_APPROVAL) {
+    private RuntimeException classifyRaceOrIllegal(String requestId, String current, long currentVersion, String action) {
+        if (current.equals("PENDING_APPROVAL")) {
             return new ConcurrentStateChangeException(requestId, current);
         }
-        boolean reachableFromPendingApproval = workflow.transitionsFrom(ApprovalState.PENDING_APPROVAL).stream()
-                .anyMatch(t -> t.to() == current);
-        boolean reachableFromSubmitted = workflow.transitionsFrom(ApprovalState.SUBMITTED).stream()
-                .anyMatch(t -> t.to() == current);
+        boolean reachableFromPendingApproval = workflow.transitionsFrom("PENDING_APPROVAL").stream()
+                .anyMatch(t -> t.to().equals(current));
+        boolean reachableFromSubmitted = workflow.transitionsFrom("SUBMITTED").stream()
+                .anyMatch(t -> t.to().equals(current));
         if (reachableFromPendingApproval && reachableFromSubmitted) {
             return currentVersion <= 1
                     ? new InvalidStateTransitionException(requestId, current, action)
@@ -235,7 +235,7 @@ public class ApprovalCommandService {
     }
 
     private void writeAudit(String requestId, String actorId, String actorRole, String action,
-                             ApprovalState from, ApprovalState to) {
+                             String from, String to) {
         AuditLog log = new AuditLog();
         log.setRequestId(requestId);
         log.setActorId(actorId);

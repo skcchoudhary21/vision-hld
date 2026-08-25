@@ -1,7 +1,22 @@
 name: transfer-approval
 version: 1
-states: [SUBMITTED, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED, EXPIRED]
 initialState: SUBMITTED
+terminalStates: [APPROVED, REJECTED, CANCELLED, EXPIRED]
+
+states:
+  - id: SUBMITTED
+    label: Submitted
+  - id: PENDING_APPROVAL
+    label: Pending Approval
+  - id: APPROVED
+    label: Approved
+  - id: REJECTED
+    label: Rejected
+  - id: CANCELLED
+    label: Cancelled
+  - id: EXPIRED
+    label: Expired
+
 transitions:
   - name: auto_approve
     from: SUBMITTED
@@ -27,3 +42,9 @@ transitions:
     from: PENDING_APPROVAL
     to: EXPIRED
     guard: sla_expired
+
+events:
+  APPROVED: [ApprovalApproved]
+  REJECTED: [ApprovalRejected]
+  CANCELLED: [ApprovalCancelled]
+  EXPIRED: [ApprovalExpired]

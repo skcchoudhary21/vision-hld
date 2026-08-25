@@ -1,6 +1,5 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -48,7 +47,7 @@ class ApprovalCommandServiceApproveTest {
 
         ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
-        assertThat(view.state()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(view.state()).isEqualTo("APPROVED");
     }
 
     @Test
@@ -57,7 +56,7 @@ class ApprovalCommandServiceApproveTest {
 
         ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
-        assertThat(view.state()).isEqualTo(ApprovalState.PENDING_APPROVAL);
+        assertThat(view.state()).isEqualTo("PENDING_APPROVAL");
     }
 
     @Test
@@ -67,7 +66,7 @@ class ApprovalCommandServiceApproveTest {
 
         ApprovalRequestView view = service.approve(id, "checker-2", "TRANSFER_CHECKER");
 
-        assertThat(view.state()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(view.state()).isEqualTo("APPROVED");
     }
 
     @Test
@@ -109,7 +108,7 @@ class ApprovalCommandServiceApproveTest {
 
         ApprovalRequestView view = service.reject(id, "checker-1", "TRANSFER_CHECKER");
 
-        assertThat(view.state()).isEqualTo(ApprovalState.REJECTED);
+        assertThat(view.state()).isEqualTo("REJECTED");
     }
 
     @Test
@@ -118,6 +117,6 @@ class ApprovalCommandServiceApproveTest {
 
         ApprovalRequestView view = service.cancel(id, "maker-1");
 
-        assertThat(view.state()).isEqualTo(ApprovalState.CANCELLED);
+        assertThat(view.state()).isEqualTo("CANCELLED");
     }
 }

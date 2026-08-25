@@ -13,13 +13,13 @@ public class ApiExceptionHandler {
     @ExceptionHandler(ConcurrentStateChangeException.class)
     public ResponseEntity<ErrorResponseDto> handle(ConcurrentStateChangeException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ErrorResponseDto("CONCURRENT_STATE_CHANGE", e.requestId, e.currentState.name(), null));
+                .body(new ErrorResponseDto("CONCURRENT_STATE_CHANGE", e.requestId, e.currentState, null));
     }
 
     @ExceptionHandler(InvalidStateTransitionException.class)
     public ResponseEntity<ErrorResponseDto> handle(InvalidStateTransitionException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ErrorResponseDto("INVALID_STATE_TRANSITION", e.requestId, e.currentState.name(), e.requestedAction));
+                .body(new ErrorResponseDto("INVALID_STATE_TRANSITION", e.requestId, e.currentState, e.requestedAction));
     }
 
     @ExceptionHandler(IdempotencyConflictException.class)

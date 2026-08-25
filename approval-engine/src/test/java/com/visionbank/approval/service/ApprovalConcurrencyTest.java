@@ -1,7 +1,6 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalDecision;
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.repository.ApprovalDecisionRepository;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
@@ -80,7 +79,7 @@ class ApprovalConcurrencyTest {
         // so neither should be rejected as a lost race.
         assertThat(outcomeA).isInstanceOf(ApprovalRequestView.class);
         assertThat(outcomeB).isInstanceOf(ApprovalRequestView.class);
-        assertThat(requests.findByRequestId(id).get().getState()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(requests.findByRequestId(id).get().getState()).isEqualTo("APPROVED");
         assertThat(decisions.countByRequestIdAndDecision(id, ApprovalDecision.DecisionType.APPROVE)).isEqualTo(2);
     }
 
@@ -107,7 +106,7 @@ class ApprovalConcurrencyTest {
 
         assertThat(successes).isEqualTo(1);
         assertThat(conflicts).isEqualTo(1);
-        assertThat(requests.findByRequestId(id).get().getState()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(requests.findByRequestId(id).get().getState()).isEqualTo("APPROVED");
         assertThat(decisions.countByRequestIdAndDecision(id, ApprovalDecision.DecisionType.APPROVE)).isEqualTo(1);
     }
 
@@ -134,8 +133,8 @@ class ApprovalConcurrencyTest {
 
         assertThat(successes).isEqualTo(1);
         assertThat(conflicts).isEqualTo(1);
-        ApprovalState finalState = requests.findByRequestId(id).get().getState();
-        assertThat(finalState).isIn(ApprovalState.CANCELLED, ApprovalState.APPROVED);
+        String finalState = requests.findByRequestId(id).get().getState();
+        assertThat(finalState).isIn("CANCELLED", "APPROVED");
     }
 
     private Callable<Object> raceTask(CountDownLatch startGate, Callable<Object> action) {

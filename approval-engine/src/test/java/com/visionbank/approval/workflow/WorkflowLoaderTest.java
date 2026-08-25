@@ -1,6 +1,5 @@
 package com.visionbank.approval.workflow;
 
-import com.visionbank.approval.domain.ApprovalState;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,17 +11,17 @@ class WorkflowLoaderTest {
         WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
 
         assertThat(def.name()).isEqualTo("transfer-approval");
-        assertThat(def.initialState()).isEqualTo(ApprovalState.SUBMITTED);
-        assertThat(def.states()).containsExactlyInAnyOrder(
-                ApprovalState.SUBMITTED, ApprovalState.PENDING_APPROVAL, ApprovalState.APPROVED,
-                ApprovalState.REJECTED, ApprovalState.CANCELLED, ApprovalState.EXPIRED);
+        assertThat(def.initialState()).isEqualTo("SUBMITTED");
+        assertThat(def.states()).extracting(WorkflowDefinition.StateDef::id).containsExactlyInAnyOrder(
+                "SUBMITTED", "PENDING_APPROVAL", "APPROVED", "REJECTED", "CANCELLED", "EXPIRED");
+        assertThat(def.terminalStates()).containsExactlyInAnyOrder("APPROVED", "REJECTED", "CANCELLED", "EXPIRED");
     }
 
     @Test
     void transitionsFromSubmittedIncludeAutoApproveAndRequireApproval() {
         WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
 
-        assertThat(def.transitionsFrom(ApprovalState.SUBMITTED))
+        assertThat(def.transitionsFrom("SUBMITTED"))
                 .extracting(Transition::name)
                 .containsExactlyInAnyOrder("auto_approve", "require_approval");
     }
@@ -32,11 +31,19 @@ class WorkflowLoaderTest {
         WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
 
         assertThat(def.byName("approve").guard()).isEqualTo("approvals_satisfied");
-        assertThat(def.byName("approve").to()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(def.byName("approve").to()).isEqualTo("APPROVED");
     }
 
     @Test
-    void loadingDefinitionWithDuplicateTransitionNamesFailsFast() {
+    void eventsFiresOnlyOnTerminalStates() {
+        WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/transfer-approval.yaml");
+
+        assertThat(def.eventsFor("APPROVED")).containsExactly("ApprovalApproved");
+        assertThat(def.eventsFor("PENDING_APPROVAL")).isEmpty();
+    }
+
+    @Test
+    void loadingDefinitionWithDuplicateTransitionIdentityFailsFast() {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> new YamlWorkflowLoader().load("workflow/invalid-duplicate-transition.yaml"));
     }

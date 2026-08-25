@@ -1,19 +1,24 @@
 package com.visionbank.approval.workflow;
 
-import com.visionbank.approval.domain.ApprovalState;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public record WorkflowDefinition(
         String name,
         int version,
-        List<ApprovalState> states,
-        ApprovalState initialState,
-        List<Transition> transitions) {
+        List<StateDef> states,
+        String initialState,
+        Set<String> terminalStates,
+        List<Transition> transitions,
+        Map<String, List<String>> events) {
 
-    public List<Transition> transitionsFrom(ApprovalState state) {
+    public record StateDef(String id, String label) {}
+
+    public List<Transition> transitionsFrom(String state) {
         return transitions.stream()
-                .filter(t -> t.from() == state)
+                .filter(t -> t.from().equals(state))
                 .collect(Collectors.toList());
     }
 
@@ -22,5 +27,17 @@ public record WorkflowDefinition(
                 .filter(t -> t.name().equals(name))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("Unknown transition: " + name));
+    }
+
+    public boolean isTerminal(String state) {
+        return terminalStates.contains(state);
+    }
+
+    public List<String> eventsFor(String state) {
+        return events.getOrDefault(state, List.of());
+    }
+
+    public boolean hasState(String state) {
+        return states.stream().anyMatch(s -> s.id().equals(state));
     }
 }

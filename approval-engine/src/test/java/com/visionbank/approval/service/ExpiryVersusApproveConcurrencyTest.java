@@ -1,7 +1,6 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.junit.jupiter.api.Test;
@@ -42,7 +41,7 @@ class ExpiryVersusApproveConcurrencyTest {
         ApprovalRequest r = new ApprovalRequest();
         r.setRequestId("race-expire");
         r.setRequestType("TRANSFER_APPROVAL");
-        r.setState(ApprovalState.PENDING_APPROVAL);
+        r.setState("PENDING_APPROVAL");
         r.setVersion(1L);
         r.setMakerId("maker-1");
         r.setPolicySnapshot(new PolicySnapshot("v1", 1, List.of("TRANSFER_CHECKER"), false));
@@ -75,7 +74,7 @@ class ExpiryVersusApproveConcurrencyTest {
         boolean approveWon = approveOutcome instanceof ApprovalRequestView;
         assertThat(expired ^ approveWon).isTrue(); // exactly one of the two won
 
-        ApprovalState finalState = requests.findByRequestId("race-expire").get().getState();
-        assertThat(finalState).isIn(ApprovalState.EXPIRED, ApprovalState.APPROVED);
+        String finalState = requests.findByRequestId("race-expire").get().getState();
+        assertThat(finalState).isIn("EXPIRED", "APPROVED");
     }
 }

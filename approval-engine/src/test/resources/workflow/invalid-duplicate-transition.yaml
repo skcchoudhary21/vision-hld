@@ -1,7 +1,12 @@
 name: broken
 version: 1
-states: [SUBMITTED, APPROVED]
 initialState: SUBMITTED
+terminalStates: [APPROVED]
+states:
+  - id: SUBMITTED
+    label: Submitted
+  - id: APPROVED
+    label: Approved
 transitions:
   - name: approve
     from: SUBMITTED

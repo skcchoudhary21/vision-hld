@@ -1,7 +1,6 @@
 package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,7 +45,7 @@ class ApprovalRequestRepositoryTest {
         ApprovalRequest r = new ApprovalRequest();
         r.setRequestId(id);
         r.setRequestType("TRANSFER_APPROVAL");
-        r.setState(ApprovalState.PENDING_APPROVAL);
+        r.setState("PENDING_APPROVAL");
         r.setVersion(0L);
         r.setMakerId("maker-1");
         r.setPolicySnapshot(new PolicySnapshot("v1", 2, List.of("TRANSFER_CHECKER"), false));
@@ -60,12 +59,12 @@ class ApprovalRequestRepositoryTest {
     void guardedTransitionSucceedsWhenStateAndVersionMatch() {
         repository.saveAndFlush(newRequest("req-1"));
 
-        int rows = repository.guardedTransition("req-1", ApprovalState.PENDING_APPROVAL, 0L, ApprovalState.APPROVED);
+        int rows = repository.guardedTransition("req-1", "PENDING_APPROVAL", 0L, "APPROVED");
 
         assertThat(rows).isEqualTo(1);
         Optional<ApprovalRequest> reloaded = repository.findByRequestId("req-1");
         assertThat(reloaded).isPresent();
-        assertThat(reloaded.get().getState()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(reloaded.get().getState()).isEqualTo("APPROVED");
         assertThat(reloaded.get().getVersion()).isEqualTo(1L);
     }
 
@@ -73,17 +72,17 @@ class ApprovalRequestRepositoryTest {
     void guardedTransitionFailsWhenVersionStale() {
         repository.saveAndFlush(newRequest("req-2"));
 
-        int rows = repository.guardedTransition("req-2", ApprovalState.PENDING_APPROVAL, 5L, ApprovalState.APPROVED);
+        int rows = repository.guardedTransition("req-2", "PENDING_APPROVAL", 5L, "APPROVED");
 
         assertThat(rows).isEqualTo(0);
-        assertThat(repository.findByRequestId("req-2").get().getState()).isEqualTo(ApprovalState.PENDING_APPROVAL);
+        assertThat(repository.findByRequestId("req-2").get().getState()).isEqualTo("PENDING_APPROVAL");
     }
 
     @Test
     void guardedTransitionFailsWhenStateStale() {
         repository.saveAndFlush(newRequest("req-3"));
 
-        int rows = repository.guardedTransition("req-3", ApprovalState.APPROVED, 0L, ApprovalState.EXPIRED);
+        int rows = repository.guardedTransition("req-3", "APPROVED", 0L, "EXPIRED");
 
         assertThat(rows).isEqualTo(0);
     }

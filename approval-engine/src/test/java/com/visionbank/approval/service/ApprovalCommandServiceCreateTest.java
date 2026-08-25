@@ -1,6 +1,5 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.PolicySnapshot;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,14 +47,14 @@ class ApprovalCommandServiceCreateTest {
     void zeroRequiredApprovalsAutoApproves() {
         ApprovalRequestView view = service.create(cmd("auto-1", 0), UUID.randomUUID().toString());
 
-        assertThat(view.state()).isEqualTo(ApprovalState.APPROVED);
+        assertThat(view.state()).isEqualTo("APPROVED");
     }
 
     @Test
     void positiveRequiredApprovalsGoesToPendingApproval() {
         ApprovalRequestView view = service.create(cmd("pending-1", 2), UUID.randomUUID().toString());
 
-        assertThat(view.state()).isEqualTo(ApprovalState.PENDING_APPROVAL);
+        assertThat(view.state()).isEqualTo("PENDING_APPROVAL");
     }
 
     @Test

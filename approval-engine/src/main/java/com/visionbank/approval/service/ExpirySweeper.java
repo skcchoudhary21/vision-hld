@@ -1,7 +1,6 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -22,7 +21,7 @@ public class ExpirySweeper {
 
     @Scheduled(fixedDelay = 60000)
     public int sweepOnce() {
-        List<ApprovalRequest> candidates = requests.findByStateAndExpiresAtBefore(ApprovalState.PENDING_APPROVAL, Instant.now());
+        List<ApprovalRequest> candidates = requests.findByStateAndExpiresAtBefore("PENDING_APPROVAL", Instant.now());
         int expiredCount = 0;
         for (ApprovalRequest candidate : candidates) {
             if (transitionService.expireOne(candidate.getRequestId(), candidate.getVersion())) {

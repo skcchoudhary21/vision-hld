@@ -1,13 +1,11 @@
 package com.visionbank.approval.workflow;
 
-import com.visionbank.approval.domain.ApprovalState;
 import org.springframework.core.io.ClassPathResource;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class YamlWorkflowLoader implements WorkflowLoader {
@@ -20,20 +18,23 @@ public class YamlWorkflowLoader implements WorkflowLoader {
 
             String name = (String) raw.get("name");
             int version = (Integer) raw.get("version");
-            List<ApprovalState> states = ((List<String>) raw.get("states")).stream()
-                    .map(ApprovalState::valueOf)
+            String initial = (String) raw.get("initialState");
+
+            List<WorkflowDefinition.StateDef> states = ((List<Map<String, String>>) raw.get("states")).stream()
+                    .map(s -> new WorkflowDefinition.StateDef(s.get("id"), s.get("label")))
                     .collect(Collectors.toList());
-            ApprovalState initial = ApprovalState.valueOf((String) raw.get("initialState"));
+
+            Set<String> terminalStates = new HashSet<>((List<String>) raw.get("terminalStates"));
 
             List<Transition> transitions = ((List<Map<String, String>>) raw.get("transitions")).stream()
-                    .map(t -> new Transition(
-                            t.get("name"),
-                            ApprovalState.valueOf(t.get("from")),
-                            ApprovalState.valueOf(t.get("to")),
-                            t.get("guard")))
+                    .map(t -> new Transition(t.get("name"), t.get("from"), t.get("to"), t.get("guard")))
                     .collect(Collectors.toList());
 
-            WorkflowDefinition definition = new WorkflowDefinition(name, version, states, initial, transitions);
+            Map<String, List<String>> events = raw.containsKey("events")
+                    ? ((Map<String, List<String>>) raw.get("events"))
+                    : Map.of();
+
+            WorkflowDefinition definition = new WorkflowDefinition(name, version, states, initial, terminalStates, transitions, events);
             validate(definition);
             return definition;
         } catch (IOException e) {
@@ -42,16 +43,29 @@ public class YamlWorkflowLoader implements WorkflowLoader {
     }
 
     private void validate(WorkflowDefinition def) {
-        if (!def.states().contains(def.initialState())) {
+        if (!def.hasState(def.initialState())) {
             throw new IllegalStateException("initialState " + def.initialState() + " is not declared in states[]");
         }
-        java.util.Set<String> seenNames = new java.util.HashSet<>();
+        Set<String> seenIdentities = new HashSet<>();
+        Set<String> statesWithOutgoingTransitions = new HashSet<>();
         for (Transition t : def.transitions()) {
-            if (!def.states().contains(t.from()) || !def.states().contains(t.to())) {
+            if (!def.hasState(t.from()) || !def.hasState(t.to())) {
                 throw new IllegalStateException("Transition " + t.name() + " references a state not in states[]");
             }
-            if (!seenNames.add(t.name())) {
-                throw new IllegalStateException("Duplicate transition name: " + t.name());
+            String identity = t.name() + "|" + t.from();
+            if (!seenIdentities.add(identity)) {
+                throw new IllegalStateException("Duplicate transition '" + t.name() + "' from state " + t.from());
+            }
+            statesWithOutgoingTransitions.add(t.from());
+        }
+        for (WorkflowDefinition.StateDef s : def.states()) {
+            boolean hasOutgoing = statesWithOutgoingTransitions.contains(s.id());
+            boolean declaredTerminal = def.terminalStates().contains(s.id());
+            if (hasOutgoing && declaredTerminal) {
+                throw new IllegalStateException("State " + s.id() + " is declared terminal but has outgoing transitions");
+            }
+            if (!hasOutgoing && !declaredTerminal) {
+                throw new IllegalStateException("State " + s.id() + " has no outgoing transitions but is not declared terminal");
             }
         }
     }

@@ -1,6 +1,5 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.ApprovalState;
 import com.visionbank.approval.domain.AuditLog;
 import com.visionbank.approval.domain.OutboxEvent;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
@@ -28,15 +27,15 @@ public class ExpiryTransitionService {
     // never a bulk UPDATE — so an in-flight approve() and this sweep can't both "win".
     @Transactional
     public boolean expireOne(String requestId, long expectedVersion) {
-        int rows = requests.guardedTransition(requestId, ApprovalState.PENDING_APPROVAL, expectedVersion, ApprovalState.EXPIRED);
+        int rows = requests.guardedTransition(requestId, "PENDING_APPROVAL", expectedVersion, "EXPIRED");
         if (rows == 0) {
             return false; // lost the race to a concurrent approve/reject/cancel — not an error
         }
         AuditLog log = new AuditLog();
         log.setRequestId(requestId);
         log.setAction("EXPIRED");
-        log.setPreviousState(ApprovalState.PENDING_APPROVAL);
-        log.setNewState(ApprovalState.EXPIRED);
+        log.setPreviousState("PENDING_APPROVAL");
+        log.setNewState("EXPIRED");
         log.setCreatedAt(Instant.now());
         audits.save(log);
 

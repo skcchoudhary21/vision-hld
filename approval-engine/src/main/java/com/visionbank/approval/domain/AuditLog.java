@@ -29,13 +29,11 @@ public class AuditLog {
     @Column(name = "action", nullable = false)
     private String action;
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "previous_state", nullable = false)
-    private ApprovalState previousState;
+    private String previousState;
 
-    @Enumerated(EnumType.STRING)
     @Column(name = "new_state", nullable = false)
-    private ApprovalState newState;
+    private String newState;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
