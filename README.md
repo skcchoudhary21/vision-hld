@@ -66,3 +66,4 @@ cd transfer-service && ./gradlew test
   fails partway through (e.g., creating the `approval` role/database fails
   after `transfer`'s succeeded), the script continues silently without rolling
   back or failing loud, risking an inconsistent setup on partial success.
+- The idempotency promise in the design doc was narrower in practice than first written: retrying with the same actor after *their own* decision completed quorum returns `409 CONCURRENT_STATE_CHANGE` rather than replaying the decided state (the terminal-state check runs first) — defensible REST behavior, but worth a documented exception rather than a broader promise.

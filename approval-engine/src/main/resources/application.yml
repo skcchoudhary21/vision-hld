@@ -9,7 +9,7 @@ spring:
     # String (via AttributeConverter or a direct String field). Without this,
     # the Postgres JDBC driver binds the String as varchar and Postgres
     # rejects it ("column is jsonb but expression is character varying").
-    url: jdbc:postgresql://localhost:5433/approval?stringtype=unspecified
+    url: jdbc:postgresql://localhost:5432/approval?stringtype=unspecified
     username: approval
     password: approval
   jpa:
@@ -18,6 +18,10 @@ spring:
     properties:
       hibernate:
         format_sql: true
+  task:
+    scheduling:
+      pool:
+        size: 2
 workflow:
   definition-path: workflow/transfer-approval.yaml
 transfer-service:

@@ -31,7 +31,23 @@ public class ApprovalEventListener {
             return; // at-least-once delivery — redelivery of an already-processed event is a no-op
         }
 
-        transfers.findByApprovalRequestId(event.requestId()).ifPresent(transfer -> {
+        // approvalRequestId is always the transferId (TransferSubmissionService passes
+        // transfer.getTransferId() as the engine's requestId, and the engine echoes it
+        // back) — looking up by the transfer's own PK means the row is found from the
+        // instant persistCreated commits, closing the window where an event could arrive
+        // before markWaitingForApproval links approval_request_id.
+        Transfer transfer = transfers.findById(event.requestId())
+                .orElseThrow(() -> new TransferNotYetVisibleException(event.requestId()));
+
+        if (transfer.getState() == TransferState.CREATED) {
+            // Event beat the local markWaitingForApproval commit — transient, not stale.
+            // Do NOT mark processed: throwing here rolls back this transaction and the
+            // controller returns non-2xx, so the relay's claim isn't marked published and
+            // it retries in the next poll, by which point the link should exist.
+            throw new TransferNotYetVisibleException(event.requestId());
+        }
+
+        if (transfer.getState() == TransferState.WAITING_FOR_APPROVAL) {
             switch (event.eventType()) {
                 case "ApprovalApproved" -> releaseService.release(transfer);
                 case "ApprovalRejected" -> setState(transfer, TransferState.REJECTED);
@@ -40,7 +56,10 @@ public class ApprovalEventListener {
                 case "ApprovalSubmitted" -> { /* no-op — transfer already WAITING_FOR_APPROVAL */ }
                 default -> { /* unknown event type — ignore rather than fail the whole delivery */ }
             }
-        });
+        }
+        // else: transfer already moved past WAITING_FOR_APPROVAL (RELEASE_PENDING/RELEASED/
+        // REJECTED/CANCELLED/EXPIRED) — a stale or duplicate-ish event on a settled transfer;
+        // permanent no-op, mark processed below so it doesn't retry forever.
 
         ProcessedEvent processed = new ProcessedEvent();
         processed.setEventId(event.eventId());

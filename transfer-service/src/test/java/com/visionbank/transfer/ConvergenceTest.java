@@ -59,16 +59,16 @@ class ConvergenceTest {
 
     @Test
     void autoApprovedAndMultiApproverPathsBothReleaseViaTheSameEvent() {
-        waitingTransfer("t-auto", "req-auto");
-        waitingTransfer("t-multi", "req-multi");
+        waitingTransfer("t-auto", "t-auto");
+        waitingTransfer("t-multi", "t-multi");
 
         // "auto" path: engine emitted ApprovalSubmitted then ApprovalApproved immediately on create
-        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalSubmitted", "req-auto"));
-        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalApproved", "req-auto"));
+        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalSubmitted", "t-auto"));
+        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalApproved", "t-auto"));
 
         // "multi" path: engine emitted ApprovalSubmitted at create, ApprovalApproved only after quorum
-        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalSubmitted", "req-multi"));
-        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalApproved", "req-multi"));
+        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalSubmitted", "t-multi"));
+        listener.handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalApproved", "t-multi"));
 
         assertThat(transfers.findById("t-auto").get().getState()).isEqualTo(TransferState.RELEASED);
         assertThat(transfers.findById("t-multi").get().getState()).isEqualTo(TransferState.RELEASED);

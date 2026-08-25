@@ -173,7 +173,7 @@ a command-level constraint, not a workflow shape.
 |---|---|---|
 | Transfer submission (client `Idempotency-Key`) | Transfer | stored key → replayed result, conflict on body mismatch |
 | Workflow create (client `Idempotency-Key`) | Engine | stored key → replayed result, conflict on body mismatch |
-| approve/reject/cancel decisions | Engine | `UNIQUE(request_id, actor_id)` — a decision is naturally idempotent per actor; retrying with the same actor on an already-decided request replays the existing state rather than double-counting |
+| approve/reject/cancel decisions | Engine | `UNIQUE(request_id, actor_id)` — a decision is naturally idempotent per actor; retrying with the same actor replays existing state, except when that actor's own decision just completed quorum — the terminal-state check runs first, so that retry gets `409 CONCURRENT_STATE_CHANGE` instead (a follow-up `GET /approvals/{id}` shows the outcome) |
 | Core-banking release | Transfer | `CoreBankingClient.release` is idempotent keyed on `transferId` — a redelivered `ApprovalApproved` event never moves money twice |
 
 Replay of `create` with same key + different body → `409

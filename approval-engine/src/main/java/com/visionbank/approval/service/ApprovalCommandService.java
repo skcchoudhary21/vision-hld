@@ -52,6 +52,13 @@ public class ApprovalCommandService {
             return toView(replayed);
         }
 
+        if (requests.findByRequestId(cmd.requestId()).isPresent()) {
+            // Same requestId under a fresh idempotency key would otherwise merge-overwrite the
+            // existing row's state/version/policy_snapshot via JPA's detached-entity save path —
+            // reject rather than silently reset an in-flight or already-decided request.
+            throw new IdempotencyConflictException(cmd.requestId());
+        }
+
         ApprovalRequest request = new ApprovalRequest();
         request.setRequestId(cmd.requestId());
         request.setRequestType(cmd.requestType());

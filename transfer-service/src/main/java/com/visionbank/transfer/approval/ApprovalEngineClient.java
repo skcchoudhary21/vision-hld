@@ -6,6 +6,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.Map;
 
 @Component
@@ -17,10 +18,15 @@ public class ApprovalEngineClient {
         // Force HTTP/1.1: the JDK HttpClient's default HTTP/2 upgrade attempt against
         // an HTTP/1.1-only server (e.g. the Approval Engine, WireMock in tests) can fail
         // with "Received RST_STREAM: Stream cancelled".
-        HttpClient httpClient = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
+        HttpClient httpClient = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(5))
+                .build();
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(5));
         this.restClient = RestClient.builder()
                 .baseUrl(baseUrl)
-                .requestFactory(new JdkClientHttpRequestFactory(httpClient))
+                .requestFactory(factory)
                 .build();
     }
 

@@ -82,4 +82,12 @@ class ApprovalCommandServiceCreateTest {
         assertThatThrownBy(() -> service.create(cmd("idem-3", 0), key))
                 .isInstanceOf(IdempotencyConflictException.class);
     }
+
+    @Test
+    void reusingRequestIdUnderADifferentKeyThrowsConflictRatherThanOverwriting() {
+        service.create(cmd("reuse-1", 2), UUID.randomUUID().toString());
+
+        assertThatThrownBy(() -> service.create(cmd("reuse-1", 0), UUID.randomUUID().toString()))
+                .isInstanceOf(IdempotencyConflictException.class);
+    }
 }
