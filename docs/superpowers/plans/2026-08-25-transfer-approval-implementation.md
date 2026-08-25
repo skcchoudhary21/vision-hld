@@ -6,13 +6,13 @@
 
 **Architecture:** Approval Engine owns a small YAML-defined workflow (states/transitions/guards) with optimistic-concurrency-controlled transitions, an append-only audit log, an SLA expiry sweeper, and a transactional outbox. Transfer Service owns transfer validation, policy resolution, a stubbed core-banking client, and release orchestration triggered only by consuming the engine's `ApprovalApproved` event (one release path for both auto- and N-approver flows). The two services talk sync REST for commands and outbox-relayed async HTTP for lifecycle events — no broker.
 
-**Tech Stack:** Java 21, Spring Boot 4.1.x, Gradle 8.x, Spring Data JPA, Postgres (one DB per service), Lombok, Testcontainers + JUnit 5, WireMock (cross-service test doubles), Docker Compose.
+**Tech Stack:** Java 21, Spring Boot 4.1.x, Gradle 8.14.3, Spring Data JPA, Postgres (one DB per service), Lombok, Testcontainers + JUnit 5, WireMock (cross-service test doubles), Docker Compose.
 
 **Spec:** `docs/superpowers/specs/2026-08-25-transfer-approval-design.md`
 
 ## Global Constraints
 
-- Java 21 / Spring Boot 4.1.x / Gradle 8.x — exact versions, not "latest".
+- Java 21 / Spring Boot 4.1.x / Gradle 8.14.3 — exact versions, not "latest". **Amendment (Task 1 execution finding):** the plan originally said Gradle 8.11, but Spring Boot 4.1.1's Gradle plugin requires Gradle 8.14+ or 9.x — 8.11 fails outright at plugin-apply time. Verified 8.14.3 works end-to-end (compile + test) with the toolchain block below. Every `settings.gradle.kts` (Tasks 1 and 10) must also add `id("org.gradle.toolchains.foojay-resolver-convention") version "0.8.0"` — Gradle 8.14.3 refuses to auto-provision a JDK 21 toolchain without a configured download resolver, so `java { toolchain { languageVersion.set(JavaLanguageVersion.of(21)) } }` (the original, correct form — do not replace it with `sourceCompatibility`/`release.set`) only works with this resolver present.
 - One Postgres DB per service; a service never writes the other's schema.
 - No message broker anywhere — lifecycle events move via a DB-backed transactional outbox + polling HTTP relay only.
 - Two fully independent Gradle builds (`transfer-service/`, `approval-engine/`) — no shared parent module, no shared DTO jar. Small duplication of the event JSON shape across services is intentional.
@@ -31,6 +31,7 @@
 ### Task 1: Approval Engine scaffold + workflow definition loader (2-hour tripwire)
 
 **Files:**
+- Modify: `.gitignore` (repo root — already exists with `.worktrees/`; append Gradle build output ignores for both services; this is the only repo-root `.gitignore` needed, Task 10 doesn't repeat it)
 - Create: `approval-engine/settings.gradle.kts`
 - Create: `approval-engine/build.gradle.kts`
 - Create: `approval-engine/src/main/java/com/visionbank/approval/ApprovalEngineApplication.java`
@@ -45,10 +46,21 @@
 **Interfaces:**
 - Produces: `ApprovalState` enum (`SUBMITTED, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED, EXPIRED`); `Transition(String name, ApprovalState from, ApprovalState to, String guard)`; `WorkflowDefinition.transitionsFrom(ApprovalState state) -> List<Transition>`; `WorkflowLoader.load(String classpathResource) -> WorkflowDefinition`.
 
-- [ ] **Step 1: Create the Gradle scaffold**
+- [ ] **Step 1: Append Gradle build-output ignores to the repo-root `.gitignore`, then create the Gradle scaffold**
+
+Append to the existing repo-root `.gitignore` (it currently has only `.worktrees/`):
+```
+build/
+.gradle/
+gradlew.bat
+```
+`gradlew.bat` is ignored deliberately — this project only ships the Unix `gradlew`; the `.bat` wrapper isn't generated and shouldn't be. `gradle/wrapper/gradle-wrapper.jar` and `gradle-wrapper.properties` are NOT ignored — those are meant to be committed (that's the point of a Gradle wrapper: reproducible builds without a global Gradle install).
 
 `approval-engine/settings.gradle.kts`:
 ```kotlin
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.8.0"
+}
 rootProject.name = "approval-engine"
 ```
 
@@ -129,6 +141,12 @@ workflow:
 transfer-service:
   webhook-url: http://localhost:8080/internal/events
 ```
+
+Generate the real Gradle wrapper now, not in Task 16 — every later step in this plan runs `./gradlew ...`, so it must exist starting here:
+```bash
+cd approval-engine && gradle wrapper --gradle-version 8.14.3 && chmod +x gradlew && cd ..
+```
+Commit `gradlew`, `gradle/wrapper/gradle-wrapper.jar`, and `gradle/wrapper/gradle-wrapper.properties` along with the rest of this task's files — they are not build output, they're what makes the build reproducible without a global Gradle install. If `gradle` isn't on `PATH` locally, download `https://services.gradle.org/distributions/gradle-8.14.3-bin.zip`, extract it, and run `wrapper --gradle-version 8.14.3` from its `bin/gradle` once.
 
 - [ ] **Step 2: Write the workflow YAML definition**
 
@@ -2823,6 +2841,9 @@ git commit -m "feat(approval-engine): REST controller and error mapping for the 
 
 `transfer-service/settings.gradle.kts`:
 ```kotlin
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.8.0"
+}
 rootProject.name = "transfer-service"
 ```
 
@@ -2894,6 +2915,12 @@ policy:
   auto-release-ceiling-minor-units: 500000      # < 5,000.00 -> 0 approvals
   single-checker-ceiling-minor-units: 5000000   # < 50,000.00 -> 1 approver, else 2
 ```
+
+Generate the real Gradle wrapper now, same as Task 1 (see its Global Constraints amendment and Step 1 for why 8.14.3, not 8.11):
+```bash
+cd transfer-service && gradle wrapper --gradle-version 8.14.3 && chmod +x gradlew && cd ..
+```
+Commit `gradlew`, `gradle/wrapper/gradle-wrapper.jar`, and `gradle/wrapper/gradle-wrapper.properties` with this task's other files.
 
 - [ ] **Step 2: Write domain types and the failing `PolicyResolver` test**
 
@@ -4368,14 +4395,13 @@ EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-- [ ] **Step 2: Generate the Gradle wrapper for both services (required for the Dockerfiles above)**
+- [ ] **Step 2: Verify both wrappers exist (they were generated in Task 1 and Task 10, not here)**
 
-Run:
 ```bash
-cd approval-engine && gradle wrapper --gradle-version 8.11 && cd ..
-cd transfer-service && gradle wrapper --gradle-version 8.11 && cd ..
+ls approval-engine/gradlew approval-engine/gradle/wrapper/gradle-wrapper.jar
+ls transfer-service/gradlew transfer-service/gradle/wrapper/gradle-wrapper.jar
 ```
-Expected: each service gets a `gradlew`, `gradlew.bat`, and `gradle/wrapper/` directory. If `gradle` isn't installed locally, download the wrapper files from `https://services.gradle.org/distributions/gradle-8.11-bin.zip` and run `gradle wrapper` from the extracted bin once, or use `sdk install gradle 8.11` first.
+Expected: all four paths exist and are tracked in git (`git ls-files` should list them). If either is missing, generate it now exactly as Task 1/10 specify (`gradle wrapper --gradle-version 8.14.3`) — don't use a different version here, the two services' wrappers must match.
 
 - [ ] **Step 3: Write `docker-compose.yml`**
 
@@ -4486,11 +4512,10 @@ Expected: `SMOKE TEST PASSED: transfer released end-to-end`. If it fails, check 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add approval-engine/Dockerfile approval-engine/gradlew approval-engine/gradlew.bat approval-engine/gradle \
-        transfer-service/Dockerfile transfer-service/gradlew transfer-service/gradlew.bat transfer-service/gradle \
-        docker-compose.yml docker-compose.smoke-test.sh
+git add approval-engine/Dockerfile transfer-service/Dockerfile docker-compose.yml docker-compose.smoke-test.sh
 git commit -m "chore: dockerize both services and add end-to-end smoke test"
 ```
+(Wrapper files were already committed in Task 1/10 — nothing new to add here for them.)
 
 ---
 
