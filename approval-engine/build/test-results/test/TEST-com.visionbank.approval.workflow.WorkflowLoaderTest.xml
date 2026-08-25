@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.visionbank.approval.workflow.WorkflowLoaderTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-08-25T03:12:43.581Z" hostname="MyGates-MacBook-Pro-6.local" time="0.137">
+  <properties/>
+  <testcase name="approveTransitionGuardIsApprovalsSatisfied()" classname="com.visionbank.approval.workflow.WorkflowLoaderTest" time="0.096"/>
+  <testcase name="loadsDefinitionFromClasspathYaml()" classname="com.visionbank.approval.workflow.WorkflowLoaderTest" time="0.016"/>
+  <testcase name="transitionsFromSubmittedIncludeAutoApproveAndRequireApproval()" classname="com.visionbank.approval.workflow.WorkflowLoaderTest" time="0.005"/>
+  <testcase name="loadingDefinitionWithDuplicateTransitionNamesFailsFast()" classname="com.visionbank.approval.workflow.WorkflowLoaderTest" time="0.006"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

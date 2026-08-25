@@ -1,0 +1,13 @@
+name: broken
+version: 1
+states: [SUBMITTED, APPROVED]
+initialState: SUBMITTED
+transitions:
+  - name: approve
+    from: SUBMITTED
+    to: APPROVED
+    guard: no_approval_required
+  - name: approve
+    from: SUBMITTED
+    to: APPROVED
+    guard: approval_required

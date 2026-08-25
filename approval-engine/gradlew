@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+GRADLE_HOME="/private/tmp/claude-502/-Users-sureshk-vision-hld/4e6f4400-303e-479b-af08-7b4f2e065e64/scratchpad/gradle-9.7.1"
+exec "$GRADLE_HOME/bin/gradle" "$@"

@@ -1,0 +1,29 @@
+name: transfer-approval
+version: 1
+states: [SUBMITTED, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED, EXPIRED]
+initialState: SUBMITTED
+transitions:
+  - name: auto_approve
+    from: SUBMITTED
+    to: APPROVED
+    guard: no_approval_required
+  - name: require_approval
+    from: SUBMITTED
+    to: PENDING_APPROVAL
+    guard: approval_required
+  - name: approve
+    from: PENDING_APPROVAL
+    to: APPROVED
+    guard: approvals_satisfied
+  - name: reject
+    from: PENDING_APPROVAL
+    to: REJECTED
+    guard: actor_is_eligible_checker
+  - name: cancel
+    from: PENDING_APPROVAL
+    to: CANCELLED
+    guard: actor_is_maker
+  - name: expire
+    from: PENDING_APPROVAL
+    to: EXPIRED
+    guard: sla_expired
