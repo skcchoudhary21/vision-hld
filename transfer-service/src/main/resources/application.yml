@@ -1,0 +1,17 @@
+server:
+  port: 8080
+spring:
+  application:
+    name: transfer-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/transfer
+    username: transfer
+    password: transfer
+  jpa:
+    hibernate:
+      ddl-auto: update
+approval-engine:
+  base-url: http://localhost:8081
+policy:
+  auto-release-ceiling-minor-units: 500000      # < 5,000.00 -> 0 approvals
+  single-checker-ceiling-minor-units: 5000000   # < 50,000.00 -> 1 approver, else 2
