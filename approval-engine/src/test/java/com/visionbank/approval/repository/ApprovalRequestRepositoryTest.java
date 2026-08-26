@@ -100,4 +100,28 @@ class ApprovalRequestRepositoryTest {
 
         assertThat(rows).isEqualTo(0);
     }
+
+    @Test
+    void findAllByOrderByCreatedAtDescReturnsNewestFirst() {
+        ApprovalRequest older = newRequest("order-old");
+        older.setCreatedAt(Instant.now().minusSeconds(60));
+        repository.saveAndFlush(older);
+
+        ApprovalRequest newer = newRequest("order-new");
+        newer.setCreatedAt(Instant.now());
+        repository.saveAndFlush(newer);
+
+        List<ApprovalRequest> all = repository.findAllByOrderByCreatedAtDesc();
+
+        int oldIdx = indexOfRequestId(all, "order-old");
+        int newIdx = indexOfRequestId(all, "order-new");
+        assertThat(newIdx).isLessThan(oldIdx);
+    }
+
+    private int indexOfRequestId(List<ApprovalRequest> list, String id) {
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).getRequestId().equals(id)) return i;
+        }
+        throw new AssertionError("requestId not found: " + id);
+    }
 }

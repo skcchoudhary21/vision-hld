@@ -41,4 +41,6 @@ public interface ApprovalRequestRepository extends JpaRepository<ApprovalRequest
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT a FROM ApprovalRequest a WHERE a.requestId = :requestId")
     Optional<ApprovalRequest> findByRequestIdForUpdate(@Param("requestId") String requestId);
+
+    List<ApprovalRequest> findAllByOrderByCreatedAtDesc();
 }

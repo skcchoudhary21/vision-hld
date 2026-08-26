@@ -126,4 +126,45 @@ class ApprovalControllerTest {
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/does-not-exist"))
                 .andExpect(status().isNotFound());
     }
+
+    @Test
+    void listReturnsAllCreatedRequestsNewestFirst() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("list-1", "transfer-single-checker")));
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("list-2", "transfer-auto-release")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId=='list-1')].currentState", is(List.of("PENDING_APPROVAL"))))
+                .andExpect(jsonPath("$[?(@.requestId=='list-2')].currentState", is(List.of("APPROVED"))))
+                .andExpect(jsonPath("$[?(@.requestId=='list-2')].terminal", is(List.of(true))))
+                .andExpect(jsonPath("$[?(@.requestId=='list-1')].terminal", is(List.of(false))));
+    }
+
+    @Test
+    void statusFilterSeparatesPendingFromCompleted() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("filter-pending-1", "transfer-single-checker")));
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("filter-done-1", "transfer-auto-release")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals?status=pending"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId=='filter-pending-1')]").exists())
+                .andExpect(jsonPath("$[?(@.requestId=='filter-done-1')]").doesNotExist());
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals?status=completed"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId=='filter-done-1')]").exists())
+                .andExpect(jsonPath("$[?(@.requestId=='filter-pending-1')]").doesNotExist());
+    }
 }

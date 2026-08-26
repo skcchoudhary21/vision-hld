@@ -134,4 +134,39 @@ public class ApprovalController {
         return workflow.transitions().stream()
                 .anyMatch(t -> t.to().equals(state) && t.name().toLowerCase().contains("approve"));
     }
+
+    @GetMapping
+    public List<ApprovalRequestSummaryDto> list(@RequestParam(required = false, defaultValue = "all") String status) {
+        return requests.findAllByOrderByCreatedAtDesc().stream()
+                .map(this::toSummary)
+                .filter(s -> switch (status) {
+                    case "pending" -> !s.terminal();
+                    case "completed" -> s.terminal();
+                    default -> true;
+                })
+                .toList();
+    }
+
+    private ApprovalRequestSummaryDto toSummary(ApprovalRequest request) {
+        WorkflowDefinition workflow = request.getPolicySnapshot().workflow();
+        String currentState = request.getState();
+        String label = workflow.states().stream()
+                .filter(s -> s.id().equals(currentState))
+                .findFirst()
+                .map(WorkflowDefinition.StateDef::label)
+                .orElse(currentState);
+        boolean terminal = workflow.isTerminal(currentState);
+
+        Transition approveFromHere = workflow.transitionsFrom(currentState).stream()
+                .filter(t -> t.name().equals("approve") && t.requiredApprovals() != null)
+                .findFirst()
+                .orElse(null);
+        Integer requiredApprovals = approveFromHere == null ? null : approveFromHere.requiredApprovals();
+        Integer currentApprovals = approveFromHere == null ? null
+                : (int) decisions.countByRequestIdAndDecisionAndState(
+                        request.getRequestId(), ApprovalDecision.DecisionType.APPROVE, currentState);
+
+        return new ApprovalRequestSummaryDto(request.getRequestId(), workflow.name(), workflow.version(),
+                currentState, label, terminal, requiredApprovals, currentApprovals, request.getCreatedAt());
+    }
 }
