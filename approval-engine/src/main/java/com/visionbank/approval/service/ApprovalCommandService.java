@@ -8,7 +8,6 @@ import com.visionbank.approval.workflow.GuardRegistry;
 import com.visionbank.approval.workflow.Transition;
 import com.visionbank.approval.workflow.WorkflowDefinition;
 import com.visionbank.approval.workflow.WorkflowRegistry;
-import com.visionbank.approval.workflow.WorkflowSelector;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,26 +29,30 @@ public class ApprovalCommandService {
     private final OutboxEventRepository outbox;
     private final IdempotencyRecordRepository idempotency;
     private final WorkflowRegistry workflowRegistry;
-    private final WorkflowSelector workflowSelector;
     private final GuardRegistry guards;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApprovalCommandService(ApprovalRequestRepository requests, ApprovalDecisionRepository decisions,
                                    AuditLogRepository audits, OutboxEventRepository outbox,
                                    IdempotencyRecordRepository idempotency, WorkflowRegistry workflowRegistry,
-                                   WorkflowSelector workflowSelector, GuardRegistry guards) {
+                                   GuardRegistry guards) {
         this.requests = requests;
         this.decisions = decisions;
         this.audits = audits;
         this.outbox = outbox;
         this.idempotency = idempotency;
         this.workflowRegistry = workflowRegistry;
-        this.workflowSelector = workflowSelector;
         this.guards = guards;
     }
 
+    // Every operation on an EXISTING request reads its own frozen copy -- never the
+    // live registry. workflowRegistry is injected solely for create()'s one lookup.
     private WorkflowDefinition workflowFor(ApprovalRequest request) {
-        return workflowRegistry.get(request.getWorkflowId());
+        return request.getPolicySnapshot().workflow();
+    }
+
+    private boolean isRoleAllowed(Transition transition, String actorRole) {
+        return transition.allowedRoles().isEmpty() || transition.allowedRoles().contains(actorRole);
     }
 
     @Transactional
@@ -66,23 +69,19 @@ public class ApprovalCommandService {
 
         if (requests.findByRequestId(cmd.requestId()).isPresent()) {
             // Same requestId under a fresh idempotency key would otherwise merge-overwrite the
-            // existing row's state/version/policy_snapshot via JPA's detached-entity save path —
+            // existing row's state/version/policy_snapshot via JPA's detached-entity save path --
             // reject rather than silently reset an in-flight or already-decided request.
             throw new IdempotencyConflictException(cmd.requestId());
         }
 
-        WorkflowDefinition resolvedWorkflow = workflowSelector.resolve(cmd.requestType());
-
-        java.util.Set<String> requiredStages = resolvedWorkflow.states().stream()
-                .map(WorkflowDefinition.StateDef::id)
-                .filter(id -> !id.equals(resolvedWorkflow.initialState()) && !resolvedWorkflow.isTerminal(id))
-                .collect(java.util.stream.Collectors.toSet());
-        java.util.Set<String> missingStages = new java.util.HashSet<>(requiredStages);
-        missingStages.removeAll(cmd.policy().stages().keySet());
-        if (!missingStages.isEmpty()) {
-            throw new InvalidRequestException("Missing stagePolicies for workflow " + resolvedWorkflow.name()
-                    + ", requestId " + cmd.requestId() + ": " + missingStages);
+        WorkflowDefinition resolvedWorkflow;
+        try {
+            resolvedWorkflow = workflowRegistry.get(cmd.workflowId(), cmd.workflowVersion());
+        } catch (IllegalStateException e) {
+            throw new InvalidRequestException("Unknown workflow " + cmd.workflowId() + ":" + cmd.workflowVersion());
         }
+
+        PolicySnapshot policy = new PolicySnapshot(cmd.policyVersion(), resolvedWorkflow);
 
         ApprovalRequest request = new ApprovalRequest();
         request.setRequestId(cmd.requestId());
@@ -90,47 +89,30 @@ public class ApprovalCommandService {
         request.setWorkflowId(resolvedWorkflow.name());
         request.setWorkflowVersion(resolvedWorkflow.version());
         request.setMakerId(cmd.makerId());
-        request.setPolicySnapshot(cmd.policy());
+        request.setPolicySnapshot(policy);
         request.setPayload(cmd.payloadJson());
         request.setCreatedAt(Instant.now());
         request.setExpiresAt(cmd.expiresAt());
         request.setVersion(0L);
         request.setState("SUBMITTED");
 
-        // currentState must be the workflow's actual approval-gate state, not literally
-        // "SUBMITTED": the no_approval_required/approval_required guards resolve their
-        // StagePolicy via ctx.currentState(), and PolicySnapshot.stages() only ever carries
-        // an entry for that gate state -- SUBMITTED itself is never a keyed stage. Every
-        // transition out of SUBMITTED is evaluated under the SAME gate state (transfer-approval's
-        // auto_approve and require_approval both key off "is approval required at this one
-        // gate", they just disagree on the answer) -- that gate is the workflow's one
-        // non-terminal destination from SUBMITTED (PENDING_APPROVAL for transfer-approval,
-        // SECURITY_REVIEW for privileged-access); a purely-terminal destination (like
-        // transfer-approval's auto_approve -> APPROVED) is never itself the gate.
-        String gateState = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
-                .map(Transition::to)
-                .filter(s -> !resolvedWorkflow.isTerminal(s))
+        // Each workflow's SUBMITTED state now has exactly one outgoing transition (spec
+        // §3.5 -- quorum is fixed per workflow version, so there's nothing left to branch
+        // on per-request). Still evaluated generically via guards -- an empty guards list
+        // always passes -- so a future workflow that DOES want conditional routing on
+        // something guard-worthy (not required-approvals-count) still works unmodified.
+        GuardContext ctx = new GuardContext(cmd.makerId(), 0, null, null, false, "SUBMITTED", null);
+        Transition initial = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
+                .filter(t -> t.guards().stream().allMatch(g -> guards.get(g).evaluate(ctx)))
                 .findFirst()
                 .orElseThrow(() -> new InvalidRequestException(
-                        "Workflow " + resolvedWorkflow.name() + " has no non-terminal transition from SUBMITTED"));
-        GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false, gateState);
-        Transition initial = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
-                .filter(t -> guards.get(t.guard()).evaluate(ctx))
-                .findFirst()
-                .orElseThrow(() -> new InvalidRequestException("No transition from SUBMITTED satisfied by policy"));
+                        "No transition from SUBMITTED satisfied for workflow " + resolvedWorkflow.name()));
 
         request.setState(initial.to());
         request.setVersion(1L);
         requests.save(request);
 
         writeAudit(cmd.requestId(), null, null, "SUBMITTED", "SUBMITTED", initial.to());
-        // ApprovalSubmitted always fires on create, regardless of workflow shape: every
-        // workflow's SUBMITTED state is non-terminal, so it's never itself in any workflow's
-        // events: map and fireEvents(initial.to()) below can never emit it a second time.
-        // Auto-approved requests then additionally emit ApprovalApproved (spec §16) so
-        // Transfer's release trigger is always "on ApprovalApproved" -- no separate
-        // auto-release path; fireEvents(resolvedWorkflow, ..., initial.to()) covers that
-        // via transfer-approval's events: map exactly as before.
         writeOutbox(cmd.requestId(), "ApprovalSubmitted");
         fireEvents(resolvedWorkflow, cmd.requestId(), initial.to());
 
@@ -160,12 +142,7 @@ public class ApprovalCommandService {
             throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "approve");
         }
 
-        GuardContext eligibility = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0,
-                actorId, actorRole, false, currentState);
-        if (guards.get("actor_is_maker").evaluate(eligibility) && !request.getPolicySnapshot().makerCanApprove()) {
-            throw new ForbiddenActionException("Maker cannot approve their own request: " + requestId);
-        }
-        if (!guards.get("actor_is_eligible_checker").evaluate(eligibility)) {
+        if (!isRoleAllowed(transition, actorRole)) {
             // Ineligible for the CURRENT stage doesn't necessarily mean this call is bogus: a
             // client that already legitimately decided at an earlier stage may retry with the
             // (now stale) role it used back then, after the request has since moved on to a
@@ -178,8 +155,19 @@ public class ApprovalCommandService {
             throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);
         }
 
+        GuardContext preDecisionCtx = new GuardContext(request.getMakerId(), 0, actorId, actorRole, false,
+                currentState, transition.requiredApprovals());
+        for (String guardName : transition.guards()) {
+            if (guardName.equals("approvals_satisfied")) {
+                continue; // evaluated after recording the decision, with the real count
+            }
+            if (!guards.get(guardName).evaluate(preDecisionCtx)) {
+                throw new ForbiddenActionException("Maker cannot approve their own request: " + requestId);
+            }
+        }
+
         if (decisions.existsByRequestIdAndActorIdAndState(requestId, actorId, currentState)) {
-            return toView(request); // already decided at this stage — idempotent replay of the decision itself
+            return toView(request); // already decided at this stage -- idempotent replay of the decision itself
         }
 
         ApprovalDecision decision = new ApprovalDecision();
@@ -192,12 +180,14 @@ public class ApprovalCommandService {
         decisions.save(decision);
 
         long approvalCount = decisions.countByRequestIdAndDecisionAndState(requestId, ApprovalDecision.DecisionType.APPROVE, currentState);
-        GuardContext quorumCtx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), approvalCount,
-                actorId, actorRole, false, currentState);
 
-        if (!guards.get(transition.guard()).evaluate(quorumCtx)) {
-            writeAudit(requestId, actorId, actorRole, "APPROVAL_RECORDED", currentState, currentState);
-            return toView(request);
+        if (transition.guards().contains("approvals_satisfied")) {
+            GuardContext quorumCtx = new GuardContext(request.getMakerId(), approvalCount, actorId, actorRole, false,
+                    currentState, transition.requiredApprovals());
+            if (!guards.get("approvals_satisfied").evaluate(quorumCtx)) {
+                writeAudit(requestId, actorId, actorRole, "APPROVAL_RECORDED", currentState, currentState);
+                return toView(request);
+            }
         }
 
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
@@ -225,9 +215,16 @@ public class ApprovalCommandService {
             throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "reject");
         }
 
-        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false, currentState);
-        if (!guards.get("actor_is_eligible_checker").evaluate(ctx)) {
+        if (!isRoleAllowed(transition, actorRole)) {
             throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);
+        }
+
+        GuardContext ctx = new GuardContext(request.getMakerId(), 0, actorId, actorRole, false,
+                currentState, transition.requiredApprovals());
+        for (String guardName : transition.guards()) {
+            if (!guards.get(guardName).evaluate(ctx)) {
+                throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);
+            }
         }
 
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
@@ -254,9 +251,12 @@ public class ApprovalCommandService {
             throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "cancel");
         }
 
-        GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false, currentState);
-        if (!guards.get("actor_is_maker").evaluate(ctx)) {
-            throw new ForbiddenActionException("Only the maker can cancel request " + requestId);
+        GuardContext ctx = new GuardContext(request.getMakerId(), 0, actorId, "MAKER", false,
+                currentState, transition.requiredApprovals());
+        for (String guardName : transition.guards()) {
+            if (!guards.get(guardName).evaluate(ctx)) {
+                throw new ForbiddenActionException("Only the maker can cancel request " + requestId);
+            }
         }
 
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
@@ -277,7 +277,7 @@ public class ApprovalCommandService {
 
     // Row-locking on purpose (spec §12 amendment): approve/reject/cancel all
     // read-then-maybe-transition based on a decision COUNT, which is an
-    // aggregate, not a single-row transition — the guarded UPDATE alone can't
+    // aggregate, not a single-row transition -- the guarded UPDATE alone can't
     // protect it. Taking the lock here serializes concurrent commands on the
     // same request, so the second one to run always sees the first's
     // committed decision before deciding whether quorum is met.

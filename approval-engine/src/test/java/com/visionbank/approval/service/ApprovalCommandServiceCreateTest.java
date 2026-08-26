@@ -1,10 +1,7 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalRequest;
-import com.visionbank.approval.domain.PolicySnapshot;
-import com.visionbank.approval.domain.StagePolicy;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -15,8 +12,6 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,24 +37,23 @@ class ApprovalCommandServiceCreateTest {
     @Autowired
     ApprovalRequestRepository requests;
 
-    private CreateApprovalRequest cmd(String requestId, int requiredApprovals) {
+    private CreateApprovalRequest cmd(String requestId, String workflowId) {
         return new CreateApprovalRequest(
-                requestId, "TRANSFER_APPROVAL", "maker-1",
-                new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(requiredApprovals, List.of("TRANSFER_CHECKER"))), false),
+                requestId, "TRANSFER_APPROVAL", "maker-1", workflowId, 1, "v1",
                 "{\"transferId\":\"" + requestId + "\"}",
                 Instant.now().plusSeconds(86400));
     }
 
     @Test
-    void zeroRequiredApprovalsAutoApproves() {
-        ApprovalRequestView view = service.create(cmd("auto-1", 0), UUID.randomUUID().toString());
+    void autoReleaseWorkflowAutoApproves() {
+        ApprovalRequestView view = service.create(cmd("auto-1", "transfer-auto-release"), UUID.randomUUID().toString());
 
         assertThat(view.state()).isEqualTo("APPROVED");
     }
 
     @Test
-    void positiveRequiredApprovalsGoesToPendingApproval() {
-        ApprovalRequestView view = service.create(cmd("pending-1", 2), UUID.randomUUID().toString());
+    void singleCheckerWorkflowGoesToPendingApproval() {
+        ApprovalRequestView view = service.create(cmd("pending-1", "transfer-single-checker"), UUID.randomUUID().toString());
 
         assertThat(view.state()).isEqualTo("PENDING_APPROVAL");
     }
@@ -69,9 +63,7 @@ class ApprovalCommandServiceCreateTest {
         String key = UUID.randomUUID().toString();
         // Reuse the exact same command instance: a real replay resends byte-identical
         // request bytes, which is what the hash-based conflict check keys off of.
-        // Calling cmd() twice would re-evaluate Instant.now() for expiresAt, producing
-        // a different hash and (correctly) tripping the conflict path exercised below.
-        CreateApprovalRequest body = cmd("idem-1", 0);
+        CreateApprovalRequest body = cmd("idem-1", "transfer-auto-release");
         ApprovalRequestView first = service.create(body, key);
 
         ApprovalRequestView second = service.create(body, key);
@@ -83,26 +75,32 @@ class ApprovalCommandServiceCreateTest {
     @Test
     void replayingSameKeyWithDifferentBodyThrowsConflict() {
         String key = UUID.randomUUID().toString();
-        service.create(cmd("idem-2", 0), key);
+        service.create(cmd("idem-2", "transfer-auto-release"), key);
 
-        assertThatThrownBy(() -> service.create(cmd("idem-3", 0), key))
+        assertThatThrownBy(() -> service.create(cmd("idem-3", "transfer-auto-release"), key))
                 .isInstanceOf(IdempotencyConflictException.class);
     }
 
     @Test
     void reusingRequestIdUnderADifferentKeyThrowsConflictRatherThanOverwriting() {
-        service.create(cmd("reuse-1", 2), UUID.randomUUID().toString());
+        service.create(cmd("reuse-1", "transfer-single-checker"), UUID.randomUUID().toString());
 
-        assertThatThrownBy(() -> service.create(cmd("reuse-1", 0), UUID.randomUUID().toString()))
+        assertThatThrownBy(() -> service.create(cmd("reuse-1", "transfer-auto-release"), UUID.randomUUID().toString()))
                 .isInstanceOf(IdempotencyConflictException.class);
     }
 
     @Test
     void createResolvesAndPersistsTheSelectedWorkflow() {
-        ApprovalRequestView view = service.create(cmd("workflow-resolve-1", 0), UUID.randomUUID().toString());
+        ApprovalRequestView view = service.create(cmd("workflow-resolve-1", "transfer-auto-release"), UUID.randomUUID().toString());
 
         ApprovalRequest saved = requests.findByRequestId(view.requestId()).orElseThrow();
-        assertThat(saved.getWorkflowId()).isEqualTo("transfer-approval");
+        assertThat(saved.getWorkflowId()).isEqualTo("transfer-auto-release");
         assertThat(saved.getWorkflowVersion()).isEqualTo(1);
+    }
+
+    @Test
+    void unknownWorkflowIdRejectedAtCreation() {
+        assertThatThrownBy(() -> service.create(cmd("bad-workflow-1", "does-not-exist"), UUID.randomUUID().toString()))
+                .isInstanceOf(InvalidRequestException.class);
     }
 }

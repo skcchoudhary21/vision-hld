@@ -1,18 +1,19 @@
-name: broken
+name: transfer-auto-release
 version: 1
 initialState: SUBMITTED
 terminalStates: [APPROVED]
+
 states:
   - id: SUBMITTED
     label: Submitted
   - id: APPROVED
     label: Approved
+
 transitions:
-  - name: approve
+  - name: auto_approve
     from: SUBMITTED
     to: APPROVED
     guards: []
-  - name: approve
-    from: SUBMITTED
-    to: APPROVED
-    guards: []
+
+events:
+  APPROVED: [ApprovalApproved]

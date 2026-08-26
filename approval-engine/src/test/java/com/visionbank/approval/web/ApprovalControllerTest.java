@@ -2,7 +2,6 @@ package com.visionbank.approval.web;
 
 import tools.jackson.databind.ObjectMapper;
 import com.visionbank.approval.web.dto.CreateApprovalRequestDto;
-import com.visionbank.approval.web.dto.StagePolicyDto;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -16,7 +15,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.is;
@@ -42,11 +40,9 @@ class ApprovalControllerTest {
     @Autowired MockMvc mockMvc;
     @Autowired ObjectMapper mapper;
 
-    private String createDto(String requestId, int required) throws Exception {
+    private String createDto(String requestId, String workflowId) throws Exception {
         return mapper.writeValueAsString(new CreateApprovalRequestDto(
-                requestId, "TRANSFER_APPROVAL", "maker-1",
-                Map.of("PENDING_APPROVAL", new StagePolicyDto(required, List.of("TRANSFER_CHECKER"))),
-                false, "{}", Instant.now().plusSeconds(86400)));
+                requestId, "TRANSFER_APPROVAL", "maker-1", workflowId, 1, "v1", "{}", Instant.now().plusSeconds(86400)));
     }
 
     @Test
@@ -54,7 +50,7 @@ class ApprovalControllerTest {
         mockMvc.perform(post("/approvals")
                         .header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType("application/json")
-                        .content(createDto("ctrl-1", 1)))
+                        .content(createDto("ctrl-1", "transfer-single-checker")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.state", is("PENDING_APPROVAL")));
     }
@@ -64,7 +60,7 @@ class ApprovalControllerTest {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType("application/json")
-                .content(createDto("ctrl-2", 1)));
+                .content(createDto("ctrl-2", "transfer-single-checker")));
 
         mockMvc.perform(post("/approvals/ctrl-2/approve")
                 .contentType("application/json")
@@ -82,7 +78,7 @@ class ApprovalControllerTest {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType("application/json")
-                .content(createDto("ctrl-4", 2)));
+                .content(createDto("ctrl-4", "transfer-high-value")));
 
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .get("/approvals/ctrl-4/workflow-view"))
@@ -92,7 +88,9 @@ class ApprovalControllerTest {
                 .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].requiredApprovals", is(List.of(2))))
                 .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].completedApprovals", is(List.of(0))))
                 .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].approvals[0]").doesNotExist())
-                .andExpect(jsonPath("$.stages[?(@.id=='SUBMITTED')].status", is(List.of("COMPLETED"))));
+                .andExpect(jsonPath("$.stages[?(@.id=='SUBMITTED')].status", is(List.of("COMPLETED"))))
+                .andExpect(jsonPath("$.availableActions[?(@.name=='approve')].allowedRoles", is(List.of(List.of("TRANSFER_CHECKER")))))
+                .andExpect(jsonPath("$.availableActions[?(@.name=='cancel')].name", is(List.of("cancel"))));
     }
 
     @Test
@@ -100,7 +98,7 @@ class ApprovalControllerTest {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType("application/json")
-                .content(createDto("ctrl-5", 1)));
+                .content(createDto("ctrl-5", "transfer-single-checker")));
 
         mockMvc.perform(post("/approvals/ctrl-5/reject")
                 .contentType("application/json")
@@ -119,7 +117,7 @@ class ApprovalControllerTest {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())
                 .contentType("application/json")
-                .content(createDto("ctrl-3", 1)));
+                .content(createDto("ctrl-3", "transfer-single-checker")));
 
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals/ctrl-3"))
                 .andExpect(status().isOk())

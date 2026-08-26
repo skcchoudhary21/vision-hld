@@ -1,5 +1,0 @@
-selectors:
-  - requestType: TRANSFER_APPROVAL
-    workflowId: transfer-approval
-  - requestType: PRIVILEGED_ACCESS
-    workflowId: privileged-access

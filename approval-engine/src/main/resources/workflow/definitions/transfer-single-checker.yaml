@@ -1,0 +1,48 @@
+name: transfer-single-checker
+version: 1
+initialState: SUBMITTED
+terminalStates: [APPROVED, REJECTED, CANCELLED, EXPIRED]
+
+states:
+  - id: SUBMITTED
+    label: Submitted
+  - id: PENDING_APPROVAL
+    label: Pending Approval
+  - id: APPROVED
+    label: Approved
+  - id: REJECTED
+    label: Rejected
+  - id: CANCELLED
+    label: Cancelled
+  - id: EXPIRED
+    label: Expired
+
+transitions:
+  - name: require_approval
+    from: SUBMITTED
+    to: PENDING_APPROVAL
+    guards: []
+  - name: approve
+    from: PENDING_APPROVAL
+    to: APPROVED
+    guards: [approvals_satisfied, actor_is_not_maker]
+    allowedRoles: [TRANSFER_CHECKER]
+    requiredApprovals: 1
+  - name: reject
+    from: PENDING_APPROVAL
+    to: REJECTED
+    allowedRoles: [TRANSFER_CHECKER]
+  - name: cancel
+    from: PENDING_APPROVAL
+    to: CANCELLED
+    guards: [actor_is_maker]
+  - name: expire
+    from: PENDING_APPROVAL
+    to: EXPIRED
+    guards: [sla_expired]
+
+events:
+  APPROVED: [ApprovalApproved]
+  REJECTED: [ApprovalRejected]
+  CANCELLED: [ApprovalCancelled]
+  EXPIRED: [ApprovalExpired]

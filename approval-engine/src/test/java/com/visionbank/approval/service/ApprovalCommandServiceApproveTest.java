@@ -1,7 +1,5 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.PolicySnapshot;
-import com.visionbank.approval.domain.StagePolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -12,8 +10,6 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -36,16 +32,15 @@ class ApprovalCommandServiceApproveTest {
     @Autowired
     ApprovalCommandService service;
 
-    private String createPending(String requestId, int required) {
+    private String createPending(String requestId, String workflowId) {
         service.create(new CreateApprovalRequest(requestId, "TRANSFER_APPROVAL", "maker-1",
-                new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(required, List.of("TRANSFER_CHECKER"))), false),
-                "{}", Instant.now().plusSeconds(86400)), UUID.randomUUID().toString());
+                workflowId, 1, "v1", "{}", Instant.now().plusSeconds(86400)), UUID.randomUUID().toString());
         return requestId;
     }
 
     @Test
-    void singleApprovalOnRequiredOneTransitionsToApproved() {
-        String id = createPending("req-single", 1);
+    void singleApprovalOnSingleCheckerWorkflowTransitionsToApproved() {
+        String id = createPending("req-single", "transfer-single-checker");
 
         ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
@@ -54,7 +49,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void firstOfTwoRequiredApprovalsRecordsWithoutTransitioning() {
-        String id = createPending("req-quorum", 2);
+        String id = createPending("req-quorum", "transfer-high-value");
 
         ApprovalRequestView view = service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
@@ -63,7 +58,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void secondOfTwoRequiredApprovalsTransitionsToApproved() {
-        String id = createPending("req-quorum-2", 2);
+        String id = createPending("req-quorum-2", "transfer-high-value");
         service.approve(id, "checker-1", "TRANSFER_CHECKER");
 
         ApprovalRequestView view = service.approve(id, "checker-2", "TRANSFER_CHECKER");
@@ -73,7 +68,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void makerCannotApproveOwnRequest() {
-        String id = createPending("req-maker", 1);
+        String id = createPending("req-maker", "transfer-single-checker");
 
         assertThatThrownBy(() -> service.approve(id, "maker-1", "TRANSFER_CHECKER"))
                 .isInstanceOf(ForbiddenActionException.class);
@@ -81,7 +76,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void ineligibleRoleCannotApprove() {
-        String id = createPending("req-role", 1);
+        String id = createPending("req-role", "transfer-single-checker");
 
         assertThatThrownBy(() -> service.approve(id, "auditor-1", "AUDITOR"))
                 .isInstanceOf(ForbiddenActionException.class);
@@ -89,7 +84,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void approvingAlreadyTerminalRequestThrowsConcurrentStateChange() {
-        String id = createPending("req-terminal", 1);
+        String id = createPending("req-terminal", "transfer-single-checker");
         service.cancel(id, "maker-1");
 
         assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER"))
@@ -98,7 +93,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void approvingAutoApprovedRequestThrowsInvalidStateTransition() {
-        String id = createPending("req-auto", 0);
+        String id = createPending("req-auto", "transfer-auto-release");
 
         assertThatThrownBy(() -> service.approve(id, "checker-1", "TRANSFER_CHECKER"))
                 .isInstanceOf(InvalidStateTransitionException.class);
@@ -106,7 +101,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void rejectTransitionsPendingToRejected() {
-        String id = createPending("req-reject", 1);
+        String id = createPending("req-reject", "transfer-single-checker");
 
         ApprovalRequestView view = service.reject(id, "checker-1", "TRANSFER_CHECKER");
 
@@ -115,7 +110,7 @@ class ApprovalCommandServiceApproveTest {
 
     @Test
     void cancelTransitionsPendingToCancelled() {
-        String id = createPending("req-cancel", 1);
+        String id = createPending("req-cancel", "transfer-single-checker");
 
         ApprovalRequestView view = service.cancel(id, "maker-1");
 

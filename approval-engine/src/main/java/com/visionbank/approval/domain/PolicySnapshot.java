@@ -1,8 +1,5 @@
 package com.visionbank.approval.domain;
 
-import java.util.Map;
+import com.visionbank.approval.workflow.WorkflowDefinition;
 
-public record PolicySnapshot(
-        String policyVersion,
-        Map<String, StagePolicy> stages,
-        boolean makerCanApprove) {}
+public record PolicySnapshot(String policyVersion, WorkflowDefinition workflow) {}

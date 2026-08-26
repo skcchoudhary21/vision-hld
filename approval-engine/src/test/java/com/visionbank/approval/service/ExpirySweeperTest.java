@@ -2,8 +2,8 @@ package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.PolicySnapshot;
-import com.visionbank.approval.domain.StagePolicy;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
+import com.visionbank.approval.workflow.WorkflowRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,6 +33,7 @@ class ExpirySweeperTest {
 
     @Autowired ExpirySweeper sweeper;
     @Autowired ApprovalRequestRepository requests;
+    @Autowired WorkflowRegistry workflowRegistry;
 
     private ApprovalRequest stalePendingRequest(String id) {
         ApprovalRequest r = new ApprovalRequest();
@@ -41,11 +42,11 @@ class ExpirySweeperTest {
         r.setState("PENDING_APPROVAL");
         r.setVersion(1L);
         r.setMakerId("maker-1");
-        r.setPolicySnapshot(new PolicySnapshot("v1", java.util.Map.of("PENDING_APPROVAL", new StagePolicy(1, java.util.List.of("TRANSFER_CHECKER"))), false));
+        r.setPolicySnapshot(new PolicySnapshot("v1", workflowRegistry.get("transfer-single-checker", 1)));
         r.setPayload("{}");
         r.setCreatedAt(Instant.now().minusSeconds(90000));
         r.setExpiresAt(Instant.now().minusSeconds(3600));
-        r.setWorkflowId("transfer-approval");
+        r.setWorkflowId("transfer-single-checker");
         r.setWorkflowVersion(1);
         return requests.save(r);
     }

@@ -1,13 +1,13 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.PolicySnapshot;
-
 import java.time.Instant;
 
 public record CreateApprovalRequest(
         String requestId,
         String requestType,
         String makerId,
-        PolicySnapshot policy,
+        String workflowId,
+        int workflowVersion,
+        String policyVersion,
         String payloadJson,
         Instant expiresAt) {}

@@ -1,6 +1,5 @@
 package com.visionbank.approval.workflow;
 
-import com.visionbank.approval.domain.StagePolicy;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -14,20 +13,10 @@ public class StandardGuards {
 
     public static GuardRegistry buildRegistry() {
         GuardRegistry registry = new GuardRegistry();
-        registry.register("no_approval_required", ctx -> stagePolicy(ctx).requiredApprovals() == 0);
-        registry.register("approval_required", ctx -> stagePolicy(ctx).requiredApprovals() > 0);
-        registry.register("approvals_satisfied", ctx -> ctx.currentApprovalCount() >= stagePolicy(ctx).requiredApprovals());
+        registry.register("approvals_satisfied", ctx -> ctx.currentApprovalCount() >= ctx.requiredApprovals());
         registry.register("actor_is_maker", ctx -> ctx.actorId() != null && ctx.actorId().equals(ctx.makerId()));
-        registry.register("actor_is_eligible_checker", ctx -> ctx.actorRole() != null && stagePolicy(ctx).eligibleRoles().contains(ctx.actorRole()));
+        registry.register("actor_is_not_maker", ctx -> ctx.actorId() == null || !ctx.actorId().equals(ctx.makerId()));
         registry.register("sla_expired", GuardContext::slaExpired);
         return registry;
-    }
-
-    private static StagePolicy stagePolicy(GuardContext ctx) {
-        StagePolicy policy = ctx.policy().stages().get(ctx.currentState());
-        if (policy == null) {
-            throw new IllegalStateException("No StagePolicy supplied for state " + ctx.currentState());
-        }
-        return policy;
     }
 }

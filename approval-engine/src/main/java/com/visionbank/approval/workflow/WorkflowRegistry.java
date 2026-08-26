@@ -11,48 +11,50 @@ import java.util.Map;
 
 public class WorkflowRegistry {
 
-    private final Map<String, WorkflowDefinition> byId;
+    public record WorkflowKey(String workflowId, int version) {}
+
+    private final Map<WorkflowKey, WorkflowDefinition> byKey;
 
     public WorkflowRegistry(String definitionsClasspathPattern, WorkflowLoader loader) {
-        this.byId = loadAll(definitionsClasspathPattern, loader);
+        this.byKey = loadAll(definitionsClasspathPattern, loader);
     }
 
-    public WorkflowDefinition get(String workflowId) {
-        WorkflowDefinition def = byId.get(workflowId);
+    public WorkflowDefinition get(String workflowId, int version) {
+        WorkflowKey key = new WorkflowKey(workflowId, version);
+        WorkflowDefinition def = byKey.get(key);
         if (def == null) {
-            throw new IllegalStateException("No workflow definition loaded for id: " + workflowId);
+            throw new IllegalStateException("No workflow definition loaded for " + workflowId + ":" + version);
         }
         return def;
     }
 
     public Collection<WorkflowDefinition> all() {
-        return byId.values();
+        return byKey.values();
     }
 
-    // Used by ExpirySweeper (Task 5) to build its candidate query across every loaded
-    // workflow, not just one hardcoded state. A state id that's terminal in one workflow
-    // but coincidentally shares a name with a non-terminal state in another workflow is an
-    // edge case no current sample workflow hits -- both examples use disjoint state-id
-    // vocabularies. Not worth solving speculatively.
+    // Used by ExpirySweeper to build its candidate query across every loaded workflow
+    // version, not just one hardcoded state.
     public List<String> allNonTerminalStates() {
-        return byId.values().stream()
+        return byKey.values().stream()
                 .flatMap(def -> def.states().stream())
                 .map(WorkflowDefinition.StateDef::id)
                 .distinct()
-                .filter(id -> byId.values().stream().noneMatch(def -> def.terminalStates().contains(id)))
+                .filter(id -> byKey.values().stream().noneMatch(def -> def.terminalStates().contains(id)))
                 .collect(java.util.stream.Collectors.toList());
     }
 
-    private static Map<String, WorkflowDefinition> loadAll(String pattern, WorkflowLoader loader) {
+    private static Map<WorkflowKey, WorkflowDefinition> loadAll(String pattern, WorkflowLoader loader) {
         try {
             Resource[] resources = new PathMatchingResourcePatternResolver().getResources(pattern);
-            Map<String, WorkflowDefinition> result = new HashMap<>();
+            Map<WorkflowKey, WorkflowDefinition> result = new HashMap<>();
             for (Resource r : resources) {
-                // Loader takes a classpath-relative path; PathMatchingResourcePatternResolver
-                // gives absolute resource URLs, so re-derive the classpath-relative form.
                 String classpathPath = "workflow/definitions/" + r.getFilename();
                 WorkflowDefinition def = loader.load(classpathPath);
-                result.put(def.name(), def);
+                WorkflowKey key = new WorkflowKey(def.name(), def.version());
+                if (result.containsKey(key)) {
+                    throw new IllegalStateException("Duplicate workflow definition for " + key.workflowId() + ":" + key.version());
+                }
+                result.put(key, def);
             }
             if (result.isEmpty()) {
                 throw new IllegalStateException("No workflow definitions found matching: " + pattern);

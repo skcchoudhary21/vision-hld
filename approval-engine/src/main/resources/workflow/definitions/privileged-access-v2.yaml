@@ -1,5 +1,5 @@
 name: privileged-access
-version: 1
+version: 2
 initialState: SUBMITTED
 terminalStates: [APPROVED, REJECTED, EXPIRED]
 
@@ -29,7 +29,7 @@ transitions:
     to: MANAGER_APPROVAL
     guards: [approvals_satisfied, actor_is_not_maker]
     allowedRoles: [SECURITY]
-    requiredApprovals: 1
+    requiredApprovals: 2
   - name: approve
     from: MANAGER_APPROVAL
     to: COMPLIANCE_REVIEW

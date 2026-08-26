@@ -26,8 +26,8 @@ public class YamlWorkflowLoader implements WorkflowLoader {
 
             Set<String> terminalStates = new HashSet<>((List<String>) raw.get("terminalStates"));
 
-            List<Transition> transitions = ((List<Map<String, String>>) raw.get("transitions")).stream()
-                    .map(t -> new Transition(t.get("name"), t.get("from"), t.get("to"), t.get("guard")))
+            List<Transition> transitions = ((List<Map<String, Object>>) raw.get("transitions")).stream()
+                    .map(this::toTransition)
                     .collect(Collectors.toList());
 
             Map<String, List<String>> events = raw.containsKey("events")
@@ -40,6 +40,15 @@ public class YamlWorkflowLoader implements WorkflowLoader {
         } catch (IOException e) {
             throw new IllegalStateException("Failed to load workflow definition: " + classpathResource, e);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Transition toTransition(Map<String, Object> t) {
+        List<String> guards = t.containsKey("guards") ? (List<String>) t.get("guards") : List.of();
+        List<String> allowedRoles = t.containsKey("allowedRoles") ? (List<String>) t.get("allowedRoles") : List.of();
+        Integer requiredApprovals = (Integer) t.get("requiredApprovals");
+        return new Transition((String) t.get("name"), (String) t.get("from"), (String) t.get("to"),
+                guards, allowedRoles, requiredApprovals);
     }
 
     private void validate(WorkflowDefinition def) {
@@ -55,6 +64,10 @@ public class YamlWorkflowLoader implements WorkflowLoader {
             String identity = t.name() + "|" + t.from();
             if (!seenIdentities.add(identity)) {
                 throw new IllegalStateException("Duplicate transition '" + t.name() + "' from state " + t.from());
+            }
+            if (t.requiredApprovals() != null && t.requiredApprovals() < 1) {
+                throw new IllegalStateException("Transition " + t.name() + " from " + t.from()
+                        + " has requiredApprovals " + t.requiredApprovals() + ", must be >= 1 when present");
             }
             statesWithOutgoingTransitions.add(t.from());
         }

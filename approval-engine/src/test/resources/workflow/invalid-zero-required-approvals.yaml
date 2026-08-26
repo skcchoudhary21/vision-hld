@@ -1,4 +1,4 @@
-name: broken
+name: broken-quorum
 version: 1
 initialState: SUBMITTED
 terminalStates: [APPROVED]
@@ -12,7 +12,4 @@ transitions:
     from: SUBMITTED
     to: APPROVED
     guards: []
-  - name: approve
-    from: SUBMITTED
-    to: APPROVED
-    guards: []
+    requiredApprovals: 0

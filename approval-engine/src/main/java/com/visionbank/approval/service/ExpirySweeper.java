@@ -29,7 +29,7 @@ public class ExpirySweeper {
         List<ApprovalRequest> candidates = requests.findByStateInAndExpiresAtBefore(nonTerminalStates, Instant.now());
         int expiredCount = 0;
         for (ApprovalRequest candidate : candidates) {
-            WorkflowDefinition workflow = workflowRegistry.get(candidate.getWorkflowId());
+            WorkflowDefinition workflow = candidate.getPolicySnapshot().workflow();
             if (transitionService.expireOne(candidate.getRequestId(), candidate.getVersion(), workflow, candidate.getState())) {
                 expiredCount++;
             }
@@ -38,12 +38,11 @@ public class ExpirySweeper {
     }
 
     // Thin delegator so existing/prior test call sites (sweeper.expireOne(requestId, version))
-    // still exercise the real transactional bean rather than a self-invoked no-op. Resolves
-    // the candidate's own bound workflow + current state the same way sweepOnce() does.
+    // still exercise the real transactional bean rather than a self-invoked no-op.
     public boolean expireOne(String requestId, long expectedVersion) {
         ApprovalRequest request = requests.findByRequestId(requestId)
                 .orElseThrow(() -> new ApprovalRequestNotFoundException(requestId));
-        WorkflowDefinition workflow = workflowRegistry.get(request.getWorkflowId());
+        WorkflowDefinition workflow = request.getPolicySnapshot().workflow();
         return transitionService.expireOne(requestId, expectedVersion, workflow, request.getState());
     }
 }

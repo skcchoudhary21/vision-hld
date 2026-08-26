@@ -1,7 +1,5 @@
 package com.visionbank.approval.service;
 
-import com.visionbank.approval.domain.PolicySnapshot;
-import com.visionbank.approval.domain.StagePolicy;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -13,7 +11,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -39,12 +36,8 @@ class PrivilegedAccessConcurrencyTest {
     @Autowired ApprovalCommandService service;
 
     private String create(String requestId) {
-        Map<String, StagePolicy> stages = Map.of(
-                "SECURITY_REVIEW", new StagePolicy(1, List.of("SECURITY")),
-                "MANAGER_APPROVAL", new StagePolicy(1, List.of("MANAGER")),
-                "COMPLIANCE_REVIEW", new StagePolicy(1, List.of("COMPLIANCE")));
         CreateApprovalRequest cmd = new CreateApprovalRequest(requestId, "PRIVILEGED_ACCESS", "maker-1",
-                new PolicySnapshot("v1", stages, false), "{}", Instant.now().plusSeconds(86400));
+                "privileged-access", 1, "v1", "{}", Instant.now().plusSeconds(86400));
         return service.create(cmd, UUID.randomUUID().toString()).requestId();
     }
 

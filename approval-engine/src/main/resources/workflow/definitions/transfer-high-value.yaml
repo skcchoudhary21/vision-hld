@@ -1,4 +1,4 @@
-name: transfer-approval
+name: transfer-high-value
 version: 1
 initialState: SUBMITTED
 terminalStates: [APPROVED, REJECTED, CANCELLED, EXPIRED]
@@ -18,30 +18,28 @@ states:
     label: Expired
 
 transitions:
-  - name: auto_approve
-    from: SUBMITTED
-    to: APPROVED
-    guard: no_approval_required
   - name: require_approval
     from: SUBMITTED
     to: PENDING_APPROVAL
-    guard: approval_required
+    guards: []
   - name: approve
     from: PENDING_APPROVAL
     to: APPROVED
-    guard: approvals_satisfied
+    guards: [approvals_satisfied, actor_is_not_maker]
+    allowedRoles: [TRANSFER_CHECKER]
+    requiredApprovals: 2
   - name: reject
     from: PENDING_APPROVAL
     to: REJECTED
-    guard: actor_is_eligible_checker
+    allowedRoles: [TRANSFER_CHECKER]
   - name: cancel
     from: PENDING_APPROVAL
     to: CANCELLED
-    guard: actor_is_maker
+    guards: [actor_is_maker]
   - name: expire
     from: PENDING_APPROVAL
     to: EXPIRED
-    guard: sla_expired
+    guards: [sla_expired]
 
 events:
   APPROVED: [ApprovalApproved]

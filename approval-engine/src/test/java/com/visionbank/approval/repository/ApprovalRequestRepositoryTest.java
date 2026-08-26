@@ -2,7 +2,8 @@ package com.visionbank.approval.repository;
 
 import com.visionbank.approval.domain.ApprovalRequest;
 import com.visionbank.approval.domain.PolicySnapshot;
-import com.visionbank.approval.domain.StagePolicy;
+import com.visionbank.approval.workflow.Transition;
+import com.visionbank.approval.workflow.WorkflowDefinition;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -17,6 +18,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase.Replace.NONE;
@@ -31,10 +33,6 @@ class ApprovalRequestRepositoryTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        // stringtype=unspecified: several columns are jsonb fed by a plain
-        // Java String; without this the Postgres JDBC driver binds the
-        // String as varchar and Postgres rejects the insert/update. See the
-        // matching comment in application.yml.
         registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
@@ -43,6 +41,18 @@ class ApprovalRequestRepositoryTest {
     @Autowired
     ApprovalRequestRepository repository;
 
+    private static final WorkflowDefinition TEST_WORKFLOW = new WorkflowDefinition(
+            "repo-test-workflow", 1,
+            List.of(new WorkflowDefinition.StateDef("PENDING_APPROVAL", "Pending Approval"),
+                    new WorkflowDefinition.StateDef("APPROVED", "Approved"),
+                    new WorkflowDefinition.StateDef("EXPIRED", "Expired")),
+            "PENDING_APPROVAL",
+            Set.of("APPROVED", "EXPIRED"),
+            List.of(new Transition("approve", "PENDING_APPROVAL", "APPROVED",
+                            List.of("approvals_satisfied"), List.of("TRANSFER_CHECKER"), 2),
+                    new Transition("expire", "PENDING_APPROVAL", "EXPIRED", List.of("sla_expired"), List.of(), null)),
+            Map.of());
+
     private ApprovalRequest newRequest(String id) {
         ApprovalRequest r = new ApprovalRequest();
         r.setRequestId(id);
@@ -50,11 +60,11 @@ class ApprovalRequestRepositoryTest {
         r.setState("PENDING_APPROVAL");
         r.setVersion(0L);
         r.setMakerId("maker-1");
-        r.setPolicySnapshot(new PolicySnapshot("v1", Map.of("PENDING_APPROVAL", new StagePolicy(2, List.of("TRANSFER_CHECKER"))), false));
+        r.setPolicySnapshot(new PolicySnapshot("v1", TEST_WORKFLOW));
         r.setPayload("{}");
         r.setCreatedAt(Instant.now());
         r.setExpiresAt(Instant.now().plusSeconds(86400));
-        r.setWorkflowId("transfer-approval");
+        r.setWorkflowId("repo-test-workflow");
         r.setWorkflowVersion(1);
         return r;
     }
