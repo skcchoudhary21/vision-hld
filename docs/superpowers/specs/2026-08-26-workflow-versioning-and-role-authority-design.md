@@ -31,6 +31,18 @@
 > doesn't depend on old YAML files staying resident in the classpath
 > forever for correctness, the same way `policy_snapshot` already doesn't
 > depend on anything external today.
+>
+> **Third reversal, added on review of this doc's first draft**: the
+> prior spec's `WorkflowSelector.resolve(requestType)` — an internal
+> `requestType → workflowId` mapping living inside approval-engine
+> (`workflow-selection.yaml`) — is removed. §1 already states the real
+> principle ("the domain's `PolicyResolver` selects which workflow
+> definition *and version* applies... the engine receives `workflowId` +
+> `workflowVersion` and executes that exact definition"); keeping an
+> internal requestType-based selector was a leftover inconsistency with
+> that principle, not a deliberate choice. The caller now supplies the
+> exact `(workflowId, workflowVersion)` pair directly; the engine does a
+> plain existence lookup, never a "pick the best match" resolution.
 
 ## 1. Core architectural decision
 
@@ -76,14 +88,22 @@ than one file being overwritten in place. Startup fails if:
   declared terminal.
 
 **But per §4 below, the registry is only ever consulted at two moments:**
-1. **Request creation** — `WorkflowSelector.resolve(requestType)`
-   resolves to the **latest** version registered for the selected
-   `workflowId` (`WorkflowRegistry` computes `Map<String workflowId, int
-   latestVersion>` once at startup and exposes
-   `resolveLatest(workflowId) → WorkflowDefinition`). The resolved
-   definition gets embedded into the new request's `policy_snapshot`
-   (§4) — that's the one and only read.
+1. **Request creation** — the caller (e.g. `banking-service`'s
+   `PolicyResolver`) supplies the exact `workflowId` + `workflowVersion`
+   it wants (§1); `ApprovalCommandService.create()` calls
+   `workflowRegistry.get(workflowId, workflowVersion)`, which throws
+   `InvalidRequestException` if that exact pair was never loaded. No
+   "latest" resolution, no `requestType`-keyed indirection inside the
+   engine — the engine performs an existence check, not a policy
+   decision. The resolved definition gets embedded into the new
+   request's `policy_snapshot` (§4) — that's the one and only read.
 2. **Startup validation** (above).
+
+There's no `resolveLatest`/"current version" concept anywhere in the
+engine. If a domain wants "new requests should move to the newest
+version automatically," that's the domain's own `PolicyResolver` config
+to change — a business decision explicitly out of the engine's hands,
+consistent with §1's "engine stays domain-blind."
 
 Every operation on an *existing* request (`approve`/`reject`/`cancel`,
 `workflow-view`, `classifyRaceOrIllegal`) reads
@@ -96,6 +116,17 @@ thing standing between old requests and correct behavior — the embedded
 snapshot is. Even if a historical YAML file were later deleted from the
 classpath entirely, requests already created against it keep working
 unaffected, because nothing at runtime looks it up again.
+
+**Relational identity vs. runtime authority, made explicit**:
+`ApprovalRequest.workflowId`/`.workflowVersion` and
+`policy_snapshot.workflow.name()`/`.version()` hold the same two values,
+written atomically in the same `create()` transaction — they can never
+disagree by construction. The columns exist for plain relational
+use (indexing, filtering, listing requests without parsing jsonb — e.g.
+the history-list UI); the embedded `workflow` is what every
+command-execution code path actually reads. Not two competing sources
+of truth — one value, one authoritative reader, one denormalized-for-
+convenience copy.
 
 ## 3. Roles and required-approvals move into the transition
 
@@ -116,12 +147,11 @@ New transition shape:
 - name: reject
   from: RISK_REVIEW
   to: REJECTED
-  guard: actor_is_eligible_checker
   allowedRoles: [RISK_CHECKER]
 - name: cancel
   from: RISK_REVIEW
   to: CANCELLED
-  guard: actor_is_maker
+  guards: [actor_is_maker]
 ```
 `allowedRoles` is OR-matched (any one qualifies). Transitions with no
 human actor (`route`/`expire`, driven by `ExpiryTransitionService` or
@@ -130,83 +160,153 @@ the initial-routing guard, never reachable through the actor-facing
 no generic "invoke any transition by name" endpoint today, so nothing
 new is needed to keep these unreachable by a human caller.
 
-`Transition` gains two fields:
+`Transition` gains two fields, and `guard` generalizes to `guards` (see
+below):
 ```java
-public record Transition(String name, String from, String to, String guard,
+public record Transition(String name, String from, String to, List<String> guards,
                           List<String> allowedRoles, Integer requiredApprovals) {}
 ```
-(`requiredApprovals` nullable — only approve-type transitions carry it;
-reject/cancel don't need a quorum.)
+(`requiredApprovals` nullable — only quorum-bearing transitions carry
+it; if present at all, it must be `>= 1`, checked at startup alongside
+the other structural validations in §2 — a `requiredApprovals: 0` or
+negative value is a config error, not a runtime "no approvals needed"
+signal (`approval_required`/`no_approval_required` already own that
+routing decision at creation).)
 
-**Guard changes**: `actor_is_eligible_checker` and `approvals_satisfied`
-(in `StandardGuards`) stop reading
-`policySnapshot.stages().get(currentState)` and instead read the
-matched `Transition`'s own `allowedRoles`/`requiredApprovals`, passed
-into `GuardContext` alongside the fields it already carries
-(`actorRole`, decision count, `currentState`). Guard *names* and the
-guard-registry mechanism are unchanged — this only changes where each
-guard reads its role/quorum data from.
+**Role-matching becomes an intrinsic dispatch step, not a guard.**
+Reviewing the first draft: it kept `actor_is_eligible_checker` as an
+explicit, opt-in guard reading `allowedRoles` — meaning a workflow
+author could set `allowedRoles` on a transition, forget to also attach
+the guard, and silently allow any role through. Since `allowedRoles` is
+now structural data on the transition itself (not caller policy), the
+engine enforces it unconditionally whenever a transition declares a
+non-empty `allowedRoles`: after resolving the matched transition and
+before evaluating its `guard`, check `actorRole ∈
+transition.allowedRoles()`; forbidden if not. `actor_is_eligible_checker`
+is deleted from `StandardGuards` — dead code, nothing left needs it. This
+isn't a redesign of the guard concept; it recognizes that role-matching
+was already fully determined by the transition once `allowedRoles`
+existed, so making it opt-in was a footgun, not flexibility.
 
-**What stays a guard, not a role check**: `approvals_satisfied` (quorum
-count), `sla_expired` (time), `approval_required`/`no_approval_required`
-(amount-based routing at creation) — these have nothing to do with
-identity and keep working exactly as today. Guards remain a general
-"named condition that must pass" mechanism; role-matching is one guard
-among several, not a redesign of the concept.
+**Maker self-approval moves to a declarative guard, not caller data.**
+The prior draft kept `makerCanApprove` in `PolicySnapshot` as a
+caller-supplied per-request flag. On review: that's inconsistent with
+this whole design's point — if a caller can no longer invent
+`eligibleRoles` per request, it shouldn't be able to invent "can the
+maker approve" per request either. Whether a *workflow* permits
+self-approval is a property of that workflow, not of who happens to
+submit a given request. New guard, `actor_is_not_maker`
+(`ctx.actorId() != ctx.makerId()`), attached only to the approve
+transitions of workflows that want to forbid it:
+```yaml
+- name: approve
+  from: PENDING_APPROVAL
+  to: APPROVED
+  guard: approvals_satisfied
+  allowedRoles: [TRANSFER_CHECKER]
+```
+becomes, where self-approval must be blocked:
+```yaml
+- name: approve
+  from: PENDING_APPROVAL
+  to: APPROVED
+  guards: [approvals_satisfied, actor_is_not_maker]
+  allowedRoles: [TRANSFER_CHECKER]
+```
+This requires one narrowly-scoped mechanical change: `Transition.guard`
+(singular `String`) becomes `Transition.guards` (`List<String>`,
+AND-composed — every named guard must pass; an empty/absent list always
+passes). Every existing transition's YAML `guard: X` becomes `guards:
+[X]` — mechanical, no behavior change for the single-guard case, which
+is still the overwhelming majority. This is still "the existing fixed
+guard registry approach... not an expression engine" (§14 of the
+original request) — just composition of named guards by AND, not
+arbitrary boolean expressions. A workflow that wants to *permit*
+self-approval simply omits `actor_is_not_maker` from its `guards` list.
+`PolicySnapshot.makerCanApprove` is removed entirely (§4).
+
+**Not touched, and deliberately not collapsed into `allowedRoles`**:
+cancel's `guard: actor_is_maker` stays a guard, not a role check.
+`actor_is_maker` compares `actorId` against `request.getMakerId()` — an
+*identity* check, unrelated to the actor's role. `MAKER` isn't a role in
+this system's vocabulary (`TRANSFER_CHECKER`, `RISK_CHECKER`,
+`TRANSFER_MANAGER`, `COMPLIANCE_OFFICER` are); collapsing an identity
+check into `allowedRoles: [MAKER]` would require inventing a synthetic
+pseudo-role and re-deriving the real check (`actorId == makerId`) from
+it anyway, which is more indirection for no gain. `actor_is_not_maker`
+above is the same reasoning applied to approve: still an identity guard,
+just negated, not a role list.
+
+**What stays a guard**: `approvals_satisfied` (quorum count),
+`sla_expired` (time), `approval_required`/`no_approval_required`
+(amount-based routing at creation), `actor_is_maker`/`actor_is_not_maker`
+(identity) — none of these are role-eligibility checks, and all keep
+working exactly as today (mechanism-wise). Guards remain a general
+"named condition that must pass" mechanism; role-matching is no longer
+modeled as one, because it's no longer optional.
 
 ## 4. `PolicySnapshot` embeds the resolved `WorkflowDefinition`
 
 ```java
-public record PolicySnapshot(String policyVersion, boolean makerCanApprove,
-                              WorkflowDefinition workflow) {}
+public record PolicySnapshot(String policyVersion, WorkflowDefinition workflow) {}
 ```
-`StagePolicy` and the `stages` map are removed entirely — no separate
-type needed. `workflow` is a direct, immutable copy of the
+`StagePolicy`, the `stages` map, and `makerCanApprove` are all removed —
+no separate type needed, and no caller-set behavioral flags survive
+outside `workflow`. `workflow` is a direct, immutable copy of the
 `WorkflowDefinition` (§3's extended `Transition`, `states`,
-`initialState`, `terminalStates`, `events`) resolved by
-`WorkflowSelector` at creation time (§2.1), stored as-is inside the same
-jsonb column that already holds `policy_snapshot` today (`WorkflowDefinition`
-is already a plain nested-record type, so no new Jackson handling beyond
-what `PolicySnapshotConverter` already does).
-`requiredApprovals`/`eligibleRoles` no longer exist as separate caller
-input at all — they're whatever `workflow.transitions()` says, frozen at
-creation.
+`initialState`, `terminalStates`, `events`) resolved by an exact
+`workflowRegistry.get(workflowId, workflowVersion)` lookup at creation
+time (§2), stored as-is inside the same jsonb column that already holds
+`policy_snapshot` today (`WorkflowDefinition` is already a plain
+nested-record type, so no new Jackson handling beyond what
+`PolicySnapshotConverter` already does). `requiredApprovals`/
+`eligibleRoles`/self-approval permission no longer exist as separate
+caller input at all — they're whatever `workflow.transitions()` says,
+frozen at creation. `policyVersion` is the one surviving free-form field:
+a caller-supplied label for the domain's *own* policy-configuration
+version (e.g. `PolicyResolver`'s amount-tier logic) — orthogonal to
+`workflowVersion`, useful for audit correlation, never read by any
+authorization or transition logic.
 
-`makerCanApprove` is the one field that survives outside `workflow`: it's
-an identity check ("the maker can't approve their own request even if
-their actor role happens to match `allowedRoles`"), not a
-role-eligibility check — `allowedRoles` can't express it, and it's a
-genuinely per-request, caller-set flag (a workflow might allow
-self-approval for low-friction/low-risk request types). `actor_is_maker`
-combined with this flag, exactly as implemented today
-(`ApprovalCommandService.java:165`), is unchanged.
+**`policy_snapshot` is configuration only, never runtime state.** It
+holds: states, transitions (`guards`, `allowedRoles`,
+`requiredApprovals`), terminal states, events, workflow name/version. It
+never holds: `currentState`, approval decisions, completed-approval
+counts, actor identities, timestamps, or execution status — those stay
+exactly where they already live, in `ApprovalRequest.state`,
+`approval_decision`, and `audit_log`. Worth stating explicitly since
+it'd be an easy, hard-to-notice mistake to let read-time-computed data
+leak into what's supposed to be a frozen, purely-declarative snapshot.
 
 `CreateApprovalRequestDto`/`CreateApprovalRequest` lose `stagePolicies`
-entirely — the caller supplies `workflowId` (or a `requestType` the
-`WorkflowSelector` maps to one), `makerId`, `payload`, `expiresAt`, and
-`makerCanApprove`. No per-stage map to build or keep in sync with the
-workflow's real shape; `ApprovalCommandService.create()` builds the
-`PolicySnapshot` itself (embedding `resolvedWorkflow`), rather than
-receiving one ready-made from the caller as it does today.
+and `makerCanApprove` entirely — the caller supplies `workflowId`,
+`workflowVersion` (both required, exact — §1/§2), `requestType` (kept as
+a descriptive/audit field only, no longer used for resolution — see the
+third reversal above), `makerId`, `payload`, and `expiresAt`. No
+per-stage map to build or keep in sync with the workflow's real shape;
+`ApprovalCommandService.create()` builds the `PolicySnapshot` itself
+(embedding the looked-up `WorkflowDefinition`), rather than receiving
+one ready-made from the caller as it does today.
 
-`ApprovalRequest.workflowId`/`workflowVersion` columns stay, populated
-from `resolvedWorkflow.name()`/`.version()` at creation same as today —
-useful as plain queryable columns (e.g. listing/filtering requests
-without parsing jsonb) — but they're now **display/query convenience
-only**, not authoritative. `policy_snapshot.workflow` is the only thing
-any command-execution code path reads.
+`ApprovalRequest.workflowId`/`workflowVersion` columns stay — see §2's
+"relational identity vs. runtime authority" — populated from the same
+lookup result used to build `policy_snapshot.workflow`, in the same
+transaction.
 
 `banking-service`'s `PolicyResolver` changes shape to match §1: instead
 of returning `ApprovalPolicy(requiredApprovals, eligibleRoles,
 makerCanApprove)`, it returns a `WorkflowSelection(workflowId,
-workflowVersion, makerCanApprove)` chosen by amount tier — e.g. today's
-single `transfer-approval` workflow becomes two:
-`transfer-standard` (0 or 1 approvals, `TRANSFER_CHECKER`) and
-`transfer-high-value` (2 approvals) as separate YAML files, replacing
-the current in-Java tier `if/else` that hardcodes the role string and
+workflowVersion)` chosen by amount tier — e.g. today's single
+`transfer-approval` workflow becomes two: `transfer-standard` (0 or 1
+approvals, `TRANSFER_CHECKER`, self-approval permitted for the
+auto-release case) and `transfer-high-value` (2 approvals,
+`actor_is_not_maker` attached) as separate YAML files, replacing the
+current in-Java tier `if/else` that hardcodes the role string and
 approval counts. Only the *amount thresholds* stay configurable Java
-values (`@Value`); which workflow and its role/quorum shape is now data,
-not code.
+values (`@Value`); which workflow, version, and its role/quorum/
+self-approval shape is now data, not code — and it's a fixed,
+`PolicyResolver`-owned mapping to a specific version, never "whatever's
+newest."
 
 ## 5. Approval-decision uniqueness, unchanged in shape
 
@@ -214,23 +314,34 @@ not code.
 spec's per-stage decision work. No change here; called out only to
 confirm this design doesn't touch it.
 
-## 6. Generic transition engine, unchanged in shape — sourced from the row, not the registry
+## 6. Generic transition engine — sourced from the row, not the registry; role-check now intrinsic
 
 `currentState + command → WorkflowDefinition.transitionsFrom(state) →
 matching transition → validate actor/guard → guardedTransition(...,
 transition.to())` — this is already how `approve`/`reject`/`cancel`
-work post-prior-spec. The one change: `workflowFor(request)` becomes
+work post-prior-spec, with two additions from §3: after the matching
+transition is found and before its `guards` are evaluated, if
+`transition.allowedRoles()` is non-empty the engine checks `actorRole ∈
+allowedRoles` unconditionally (no longer a named, opt-in guard); then
+each name in `transition.guards()` is evaluated in order, AND-composed —
+any failure stops the transition (for approve specifically, an
+`approvals_satisfied` failure means "stay put, record the decision,
+don't transition," same as today; any other guard failing is a hard
+`ForbiddenActionException`/`InvalidStateTransitionException`, also
+same as today). The other change: `workflowFor(request)` becomes
 ```java
 private WorkflowDefinition workflowFor(ApprovalRequest request) {
     return request.getPolicySnapshot().workflow();
 }
 ```
 replacing `workflowRegistry.get(request.getWorkflowId())`. `WorkflowRegistry`
-is no longer injected into `ApprovalCommandService` for this purpose at
-all — only `WorkflowSelector` (used solely in `create()`) still depends
-on it. No new dispatch mechanism, no merging the three endpoints into
-one generic `POST /{id}/{action}` — preserves the existing REST
-structure per the prior spec's own choice.
+is only ever called once now, inside `create()`, for the exact-match
+lookup described in §2 — `approve`/`reject`/`cancel`/`workflow-view`
+never inject or call it. `WorkflowSelector` and
+`workflow-selection.yaml` are deleted (the intro's third reversal) —
+there's no indirection left to remove them from. No new dispatch mechanism, no
+merging the three endpoints into one generic `POST /{id}/{action}` —
+preserves the existing REST structure per the prior spec's own choice.
 
 `classifyRaceOrIllegal`'s BFS-over-the-graph approach (already
 generalized, per the most recent commit) is unaffected — it operates on
@@ -281,13 +392,23 @@ what the UI showed, exactly as they do today.
 
 Same situation as the prior spec's §10: `ddl-auto: update`, local
 dev/test data only, no production users. `policy_snapshot`'s shape
-change and `Transition`'s new fields mean: drop and let Hibernate
-recreate on next startup, not a backfill. The existing
-`transfer-approval.yaml`/`privileged-access.yaml` need `allowedRoles`/
-`requiredApprovals` added to their transitions (mechanical, using
-today's already-known-correct values: `TRANSFER_CHECKER` /
-`SECURITY`/`MANAGER`/`COMPLIANCE`-shaped roles per the existing tests'
-fixtures) as part of the same change, not a follow-up.
+change and `Transition`'s new/renamed fields mean: drop and let
+Hibernate recreate on next startup, not a backfill. The existing
+`transfer-approval.yaml`/`privileged-access.yaml` need, mechanically, in
+the same change:
+- `guard: X` → `guards: [X]` on every transition.
+- `allowedRoles`/`requiredApprovals` added, using today's
+  already-known-correct values (`TRANSFER_CHECKER` /
+  `SECURITY`/`MANAGER`/`COMPLIANCE`-shaped roles per the existing tests'
+  fixtures).
+- `actor_is_not_maker` added to `transfer-approval`'s approve
+  transition's `guards` list (today's `makerCanApprove` behavior for
+  transfers is "maker cannot approve," per `ApprovalCommandService`'s
+  existing check) — `privileged-access` likewise, unless its tests show
+  otherwise.
+- `workflow-selection.yaml` and `WorkflowSelector` deleted; whatever test
+  fixtures / `banking-service` calls relied on `requestType`-based
+  resolution switch to supplying `workflowId`+`workflowVersion` directly.
 
 ## 10. Tests required (new/changed, beyond what the prior spec already covers)
 
@@ -295,19 +416,36 @@ fixtures) as part of the same change, not a follow-up.
   different versions both load; a request created under v1 keeps
   resolving v1's transitions/roles after v2 is loaded; duplicate
   `(workflowId, version)` across files fails startup.
+- **Exact-version lookup, no "latest"**: creating a request with a
+  `workflowVersion` that was never loaded fails with a clear error, even
+  when a different version of the same `workflowId` does exist —
+  confirms there's no silent fallback to "whatever's newest."
 - **Snapshot self-containment**: create a request, then remove/corrupt
   its workflow's YAML file (or swap in a mock `WorkflowRegistry` that
   throws) and confirm `approve`/`reject`/`cancel`/`workflow-view` all
   still work correctly against that request — proves the runtime path
   genuinely never re-consults the registry post-creation.
-- **Role authority**: `allowedRoles` from the transition (not caller
-  JSON) is what's enforced; an actor whose role isn't listed is
-  forbidden even if the (now-removed) caller-supplied policy would have
-  allowed it — i.e. confirm there's no remaining code path that lets a
-  caller inject roles.
+- **Role authority, intrinsic enforcement**: `allowedRoles` from the
+  transition (not caller JSON) is what's enforced, unconditionally,
+  even on a transition whose `guards` list is empty; an actor whose role
+  isn't listed is forbidden even if the (now-removed) caller-supplied
+  policy would have allowed it — confirms there's no remaining code path
+  that lets a caller inject roles, and no way to accidentally ship a
+  transition with `allowedRoles` set but unenforced.
+- **`guards` AND-composition**: a transition with
+  `guards: [approvals_satisfied, actor_is_not_maker]` requires both to
+  pass; maker attempting to approve with quorum already satisfied is
+  still forbidden by `actor_is_not_maker`; a non-maker checker succeeds
+  once `approvals_satisfied` is also true.
+- **`actor_is_not_maker` opt-in**: a workflow whose approve transition
+  omits it allows the maker to approve their own request (role
+  permitting); one that includes it doesn't — replaces the old
+  `makerCanApprove` boolean test.
 - **`PolicySnapshot` shape**: create-request validation no longer
-  requires/accepts `stagePolicies`; `makerCanApprove` still gates
-  self-approval exactly as before.
+  accepts `stagePolicies` or `makerCanApprove`; requires `workflowId` +
+  `workflowVersion` explicitly.
+- **`requiredApprovals` structural validation**: a workflow YAML with
+  `requiredApprovals: 0` or negative fails at startup, not at first use.
 - **`availableActions`**: workflow-view returns the correct action list
   with roles/quorum per stage, including the in-progress
   `currentApprovals` count.
