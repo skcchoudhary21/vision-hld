@@ -141,7 +141,7 @@ approval-engine/src/main/resources/static/
 ├── console.html          -- shell: header (title + actor dropdown), left nav, right content area
 ├── console.css
 ├── console.js             -- tiny hash-based view switcher (#requests / #requests/{id} / #workflows / #workflows/{id}/{v}), no router library
-└── console-api.js         -- fetch wrappers for the 5 endpoints this UI calls
+└── console-api.js         -- fetch wrappers for the 6 endpoints this UI calls (5 new/reused GETs + the 3 existing POST actions)
 ```
 No build step, no framework — plain `<script>` tags, matching the
 existing `ui.html`'s own style. Client-side "page" switching is
@@ -186,6 +186,19 @@ returns `stages` and `availableActions` — nothing new needed here). Renders:
   `actorId` (a plain `prompt()`, no form needed for a demo tool), then
   `POST`s to the existing `/approvals/{id}/{action}` endpoints and
   re-fetches `workflow-view`.
+- **Workflow History**, below the pipeline: an append-only, reverse-
+  chronological timeline of every transition and recorded decision on
+  this request. No new endpoint — calls the existing `GET
+  /approvals/{id}/audit` (already returns `AuditLogEntryDto[]`: `action`,
+  `previousState`, `newState`, `actorId`, `actorRole`, `createdAt`), the
+  same endpoint `ui.html`'s own Audit Timeline panel already proves out.
+  Each row renders `createdAt` · `previousState → newState` (or just
+  `previousState` when the action didn't transition, e.g.
+  `APPROVAL_RECORDED`) · `action` · `actorId`/`actorRole` (blank for the
+  `SUBMITTED` system-routing entry, which carries no actor). This
+  answers "how did it get here" where the pipeline above only answers
+  "where is it now" — purely additive, reusing data that already exists;
+  no new persistence, no new query.
 
 ### Screen 3 — Workflow Definitions (`#workflows`, `#workflows/{id}/{version}`)
 
