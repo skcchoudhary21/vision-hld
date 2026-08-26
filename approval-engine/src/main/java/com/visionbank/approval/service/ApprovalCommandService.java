@@ -30,12 +30,6 @@ public class ApprovalCommandService {
     private final GuardRegistry guards;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    // Retained only for classifyRaceOrIllegal, which Task 5 deliberately leaves untouched
-    // (its generalization is Task 6) -- still transfer-approval-specific two-state race
-    // classification, now sourced from the registry instead of a directly-injected single
-    // WorkflowDefinition bean.
-    private final WorkflowDefinition workflow;
-
     public ApprovalCommandService(ApprovalRequestRepository requests, ApprovalDecisionRepository decisions,
                                    AuditLogRepository audits, OutboxEventRepository outbox,
                                    IdempotencyRecordRepository idempotency, WorkflowRegistry workflowRegistry,
@@ -48,7 +42,6 @@ public class ApprovalCommandService {
         this.workflowRegistry = workflowRegistry;
         this.workflowSelector = workflowSelector;
         this.guards = guards;
-        this.workflow = workflowRegistry.get("transfer-approval");
     }
 
     private WorkflowDefinition workflowFor(ApprovalRequest request) {
@@ -279,35 +272,95 @@ public class ApprovalCommandService {
     }
 
     /**
-     * A current state is a "lost race" (409 CONCURRENT_STATE_CHANGE) if it's reachable
-     * from PENDING_APPROVAL per the workflow definition — some other legal command won.
-     * Otherwise the action was never legal from this state, regardless of timing
-     * (409 INVALID_STATE_TRANSITION) — e.g. approve() on a request that auto-approved
-     * straight from SUBMITTED and never passed through PENDING_APPROVAL.
+     * A current state is a "lost race" (409 CONCURRENT_STATE_CHANGE) if the actor's
+     * target action was legal at the moment they presumably read the row -- i.e. `current`
+     * is graph-reachable from some state that `action` could plausibly have started from,
+     * via zero or more further legal transitions. Otherwise the action could never have
+     * applied to this row regardless of timing (409 INVALID_STATE_TRANSITION).
      *
-     * APPROVED is reachable both ways (auto_approve from SUBMITTED, and approve from
-     * PENDING_APPROVAL), so state alone can't tell those two apart; currentVersion
-     * breaks the tie. create() always stamps version 1 on a request's first transition,
-     * and only a later real PENDING_APPROVAL transition bumps it again, so version 1
-     * here means this row auto-approved and never passed through PENDING_APPROVAL.
+     * Reachability is computed via real BFS shortest-path over the request's own resolved
+     * WorkflowDefinition, not hardcoded to any particular workflow's shape (see spec §7 /
+     * Task 6 brief). When more than one candidate start reaches `current`, and at different
+     * hop counts, currentVersion (the number of transitions actually taken on this row)
+     * disambiguates a genuine multi-step race from a shortcut path that never involved a
+     * real decision at the actor's target stage.
      */
     private RuntimeException classifyRaceOrIllegal(String requestId, String current, long currentVersion, String action) {
-        if (current.equals("PENDING_APPROVAL")) {
-            return new ConcurrentStateChangeException(requestId, current);
+        WorkflowDefinition workflow = workflowRegistry.get(requests.findByRequestId(requestId).orElseThrow().getWorkflowId());
+
+        // Every state this action-type could plausibly have started from: any `from`
+        // of a transition named `action`, anywhere in the workflow. If none exist at
+        // all, the action never applies to this workflow regardless of state or timing.
+        java.util.List<String> candidateStarts = workflow.transitions().stream()
+                .filter(t -> t.name().equals(action))
+                .map(Transition::from)
+                .distinct()
+                .toList();
+
+        if (candidateStarts.isEmpty()) {
+            return new InvalidStateTransitionException(requestId, current, action);
         }
-        boolean reachableFromPendingApproval = workflow.transitionsFrom("PENDING_APPROVAL").stream()
-                .anyMatch(t -> t.to().equals(current));
-        boolean reachableFromSubmitted = workflow.transitionsFrom("SUBMITTED").stream()
-                .anyMatch(t -> t.to().equals(current));
-        if (reachableFromPendingApproval && reachableFromSubmitted) {
-            return currentVersion <= 1
+
+        // Shortest total path (in transitions, from the workflow's true initialState) that
+        // passes through some state where `action` was actually available: hops to reach a
+        // candidate start, plus hops from there on to `current`.
+        int shortestViaCandidateStart = Integer.MAX_VALUE;
+        boolean reachableViaCandidateStart = false;
+        for (String start : candidateStarts) {
+            int hopsToStart = shortestPathLength(workflow, workflow.initialState(), start);
+            int hopsFromStart = shortestPathLength(workflow, start, current);
+            if (hopsToStart >= 0 && hopsFromStart >= 0) {
+                reachableViaCandidateStart = true;
+                shortestViaCandidateStart = Math.min(shortestViaCandidateStart, hopsToStart + hopsFromStart);
+            }
+        }
+
+        if (!reachableViaCandidateStart) {
+            return new InvalidStateTransitionException(requestId, current, action);
+        }
+
+        // Shortest path from the workflow's true initialState to `current` via ANY
+        // transitions at all, regardless of name -- catches shortcuts like transfer-approval's
+        // auto_approve, which reach a shared terminal state without ever passing through
+        // `action`'s own stage.
+        int shortestFromInitialState = shortestPathLength(workflow, workflow.initialState(), current);
+
+        // A strictly shorter shortcut bypasses `action`'s stage entirely: ambiguous. currentVersion
+        // is exactly the number of transitions actually taken on this row -- if it matches the
+        // shortcut's length precisely, this row took the shortcut and never passed through a state
+        // where `action` applied, regardless of when this call arrived (illegal). Any other version
+        // means real decisions happened beyond the shortcut -- a genuine race. When no such shortcut
+        // exists (every path to `current` passes through a candidate start), there's nothing to
+        // disambiguate and it's a legitimate race regardless of version.
+        if (shortestFromInitialState >= 0 && shortestFromInitialState < shortestViaCandidateStart) {
+            return currentVersion == shortestFromInitialState
                     ? new InvalidStateTransitionException(requestId, current, action)
                     : new ConcurrentStateChangeException(requestId, current);
         }
-        if (reachableFromPendingApproval) {
-            return new ConcurrentStateChangeException(requestId, current);
+        return new ConcurrentStateChangeException(requestId, current);
+    }
+
+    private int shortestPathLength(WorkflowDefinition workflow, String from, String to) {
+        if (from.equals(to)) {
+            return 0;
         }
-        return new InvalidStateTransitionException(requestId, current, action);
+        java.util.Queue<String> frontier = new java.util.ArrayDeque<>();
+        java.util.Map<String, Integer> distance = new java.util.HashMap<>();
+        frontier.add(from);
+        distance.put(from, 0);
+        while (!frontier.isEmpty()) {
+            String node = frontier.poll();
+            for (Transition t : workflow.transitionsFrom(node)) {
+                if (!distance.containsKey(t.to())) {
+                    distance.put(t.to(), distance.get(node) + 1);
+                    if (t.to().equals(to)) {
+                        return distance.get(t.to());
+                    }
+                    frontier.add(t.to());
+                }
+            }
+        }
+        return -1;
     }
 
     private void writeAudit(String requestId, String actorId, String actorRole, String action,
