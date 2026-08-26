@@ -51,9 +51,12 @@ workflow definition and version** applies to a request — not individual
 approval counts. Example:
 
 ```
-Transfer ₹1L–₹10L  → transfer-standard:v1
-Transfer > ₹10L    → transfer-high-value:v1
+Transfer < auto-release ceiling → transfer-auto-release:v1
+… up to single-checker ceiling  → transfer-single-checker:v1
+… above that                    → transfer-high-value:v1
 ```
+(Three tiers, not two — see §3.5 for why the 0- and 1-approval cases
+can't share one workflow under this design.)
 
 The Approval Engine receives `workflowId` + `workflowVersion` and
 executes that exact definition. The engine stays domain-blind: it never
@@ -169,9 +172,8 @@ public record Transition(String name, String from, String to, List<String> guard
 (`requiredApprovals` nullable — only quorum-bearing transitions carry
 it; if present at all, it must be `>= 1`, checked at startup alongside
 the other structural validations in §2 — a `requiredApprovals: 0` or
-negative value is a config error, not a runtime "no approvals needed"
-signal (`approval_required`/`no_approval_required` already own that
-routing decision at creation).)
+negative value is a config error. There's no runtime "0 approvals
+needed" case to express any more — see §3.5.)
 
 **Role-matching becomes an intrinsic dispatch step, not a guard.**
 Reviewing the first draft: it kept `actor_is_eligible_checker` as an
@@ -238,12 +240,62 @@ above is the same reasoning applied to approve: still an identity guard,
 just negated, not a role list.
 
 **What stays a guard**: `approvals_satisfied` (quorum count),
-`sla_expired` (time), `approval_required`/`no_approval_required`
-(amount-based routing at creation), `actor_is_maker`/`actor_is_not_maker`
-(identity) — none of these are role-eligibility checks, and all keep
-working exactly as today (mechanism-wise). Guards remain a general
-"named condition that must pass" mechanism; role-matching is no longer
-modeled as one, because it's no longer optional.
+`sla_expired` (time), `actor_is_maker`/`actor_is_not_maker` (identity) —
+none of these are role-eligibility checks, and all keep working exactly
+as today (mechanism-wise, for `approvals_satisfied`/`sla_expired`/
+`actor_is_maker`). Guards remain a general "named condition that must
+pass" mechanism; role-matching is no longer modeled as one, because it's
+no longer optional.
+
+`GuardContext` gains the fields guards actually need now that quorum
+data lives on the transition, not the caller's policy:
+```java
+public record GuardContext(String makerId, long currentApprovalCount, String actorId,
+                            String actorRole, boolean slaExpired, String currentState,
+                            Integer requiredApprovals) {}
+```
+`policy` (the whole `PolicySnapshot`) is dropped from `GuardContext` —
+no guard needs the embedded `WorkflowDefinition` itself, only the one
+`requiredApprovals` value off the *matched transition*, which the caller
+(`ApprovalCommandService`) already has in hand when it builds the
+context. `approvals_satisfied` becomes `ctx.currentApprovalCount() >=
+ctx.requiredApprovals()` — no more `stagePolicy(ctx)` indirection
+through a stage-keyed map.
+
+## 3.5. Why `no_approval_required`/`approval_required` are deleted, not migrated
+
+Tracing this against the real `create()` flow surfaced a gap the first
+two drafts missed. Today, `SUBMITTED`'s routing between `auto_approve`
+(→ `APPROVED` directly) and `require_approval` (→ `PENDING_APPROVAL`) is
+decided by comparing a *per-request* `requiredApprovals` value to zero —
+the same caller-supplied number that later gates the quorum check.
+That's only possible because, today, `requiredApprovals` is caller data
+attached to the request, not the workflow.
+
+Once `requiredApprovals` moves onto the transition itself (§3) — fixed
+per workflow *version*, never per-request — there's nothing left for
+`no_approval_required`/`approval_required` to read: a single workflow
+version can't simultaneously mean "0 approvals" for one request and "1
+approval" for another, because there's no longer a per-request value to
+branch on. The three amounts tiers `banking-service`'s `PolicyResolver`
+already distinguishes (0 / 1 / 2 approvals — `PolicyResolver.java:20-27`)
+become **three separate workflow definitions**, not two:
+```
+Transfer < auto-release ceiling        → transfer-auto-release:v1   (SUBMITTED → APPROVED, no approval stage)
+auto-release ceiling ≤ … < single-checker ceiling → transfer-single-checker:v1  (1 approval, TRANSFER_CHECKER)
+… ≥ single-checker ceiling             → transfer-high-value:v1     (2 approvals, TRANSFER_CHECKER)
+```
+(This corrects §1's and §4's earlier two-workflow example, which
+conflated the 0- and 1-approval tiers into one "transfer-standard"
+workflow — not viable once quorum is version-fixed rather than
+caller-supplied.) Each workflow's `SUBMITTED` state now has exactly one
+outgoing transition — nothing left to route between, so no guard is
+doing real work there. `no_approval_required`/`approval_required` are
+deleted from `StandardGuards` as dead code. A single-transition state
+still needs *some* guard name to satisfy the "every transition has
+guards" convention (an empty `guards: []` list already means "always
+passes," per §3, so the clean answer is simply `guards: []` on these
+routing transitions — no new guard needed either).
 
 ## 4. `PolicySnapshot` embeds the resolved `WorkflowDefinition`
 
@@ -296,17 +348,18 @@ transaction.
 `banking-service`'s `PolicyResolver` changes shape to match §1: instead
 of returning `ApprovalPolicy(requiredApprovals, eligibleRoles,
 makerCanApprove)`, it returns a `WorkflowSelection(workflowId,
-workflowVersion)` chosen by amount tier — e.g. today's single
-`transfer-approval` workflow becomes two: `transfer-standard` (0 or 1
-approvals, `TRANSFER_CHECKER`, self-approval permitted for the
-auto-release case) and `transfer-high-value` (2 approvals,
-`actor_is_not_maker` attached) as separate YAML files, replacing the
-current in-Java tier `if/else` that hardcodes the role string and
+workflowVersion)` chosen by amount tier — today's single
+`transfer-approval` workflow becomes three separate YAML files per §3.5:
+`transfer-auto-release` (`SUBMITTED → APPROVED`, no approval stage, no
+`TRANSFER_CHECKER` involved at all), `transfer-single-checker` (1
+approval, `TRANSFER_CHECKER`, `actor_is_not_maker` attached — maker
+cannot approve today per `ApprovalCommandService.java:165`'s existing
+check), and `transfer-high-value` (same shape, 2 approvals) — replacing
+the current in-Java tier `if/else` that hardcodes the role string and
 approval counts. Only the *amount thresholds* stay configurable Java
-values (`@Value`); which workflow, version, and its role/quorum/
-self-approval shape is now data, not code — and it's a fixed,
-`PolicyResolver`-owned mapping to a specific version, never "whatever's
-newest."
+values (`@Value`); which workflow, version, and its role/quorum shape is
+now data, not code — and it's a fixed, `PolicyResolver`-owned mapping to
+a specific version, never "whatever's newest."
 
 ## 5. Approval-decision uniqueness, unchanged in shape
 
@@ -449,7 +502,12 @@ the same change:
 - **`availableActions`**: workflow-view returns the correct action list
   with roles/quorum per stage, including the in-progress
   `currentApprovals` count.
-- **Existing 39+ tests** (prior spec's suite): pass unchanged in
-  observable behavior — this is a refactor of *where* role/quorum data
-  lives, not a behavior change for `transfer-standard`'s or
-  `privileged-access`'s existing test scenarios.
+- **Existing 39+ tests** (prior spec's suite): `privileged-access`'s
+  observable behavior is unchanged (same 3-stage shape, roles/quorum
+  just moved from caller JSON to the YAML) — those tests are
+  refactor-only. `transfer-approval`'s tests split along with the
+  workflow itself (§3.5): each existing 0/1/2-approval scenario becomes
+  a test against the specific one of the three new workflows
+  (`transfer-auto-release`/`transfer-single-checker`/
+  `transfer-high-value`) that now owns that quorum count, rather than
+  one workflow parameterized by caller-supplied `requiredApprovals`.
