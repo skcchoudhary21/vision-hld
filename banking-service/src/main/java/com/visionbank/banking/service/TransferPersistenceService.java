@@ -41,10 +41,10 @@ public class TransferPersistenceService {
     }
 
     @Transactional
-    public Transfer markWaitingForApproval(String transferId, String approvalRequestId) {
+    public Transfer markPendingApproval(String transferId, String approvalRequestId) {
         Transfer transfer = transfers.findById(transferId).orElseThrow();
         transfer.setApprovalRequestId(approvalRequestId);
-        transfer.setState(TransferState.WAITING_FOR_APPROVAL);
+        transfer.setState(TransferState.PENDING_APPROVAL);
         return transfers.save(transfer);
     }
 }

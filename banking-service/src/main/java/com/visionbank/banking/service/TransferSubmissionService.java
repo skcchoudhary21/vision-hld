@@ -70,10 +70,10 @@ public class TransferSubmissionService {
                 transfer.getExpiresAt()); // persisted value — never recomputed on retry
         WorkflowResponse workflowResponse = approvalEngineClient.createWorkflow(workflowRequest, transfer.getTransferId());
 
-        // Always WAITING_FOR_APPROVAL here regardless of workflowResponse.state() —
+        // Always PENDING_APPROVAL here regardless of workflowResponse.state() —
         // release is only ever triggered by consuming ApprovalApproved, so auto-release
         // and N-approver release share one trigger path.
-        Transfer completed = persistenceService.markWaitingForApproval(transfer.getTransferId(), workflowResponse.requestId());
+        Transfer completed = persistenceService.markPendingApproval(transfer.getTransferId(), workflowResponse.requestId());
         return new TransferView(completed.getTransferId(), completed.getState());
     }
 }

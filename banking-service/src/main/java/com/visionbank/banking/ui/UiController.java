@@ -50,8 +50,10 @@ public class UiController {
     }
 
     @GetMapping("/approvals")
-    public List<ApprovalSummaryDto> listApprovals(@RequestParam(required = false, defaultValue = "all") String status) {
-        return approvalEngineClient.getApprovalsList(status);
+    public List<ApprovalSummaryDto> listApprovals(@RequestParam(required = false, defaultValue = "all") String status,
+                                                   @RequestParam(required = false, defaultValue = "false") boolean mine,
+                                                   @RequestHeader("X-Actor-Role") String actorRole) {
+        return approvalEngineClient.getApprovalsList(status, mine, actorRole);
     }
 
     @GetMapping("/workflows")
@@ -62,6 +64,16 @@ public class UiController {
     @GetMapping("/workflows/{id}/{version}")
     public WorkflowDefinitionDto getWorkflow(@PathVariable String id, @PathVariable int version) {
         return approvalEngineClient.getWorkflowDefinition(id, version);
+    }
+
+    @GetMapping("/policy-rules")
+    public List<PolicyRuleDto> listPolicyRules() {
+        return approvalEngineClient.getPolicyRules();
+    }
+
+    @PutMapping("/policy-rules")
+    public List<PolicyRuleDto> replacePolicyRules(@RequestBody List<PolicyRuleDto> rules) {
+        return approvalEngineClient.replacePolicyRules(rules);
     }
 
     // Generic create, for workflows with no banking-service-native creation path

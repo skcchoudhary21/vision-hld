@@ -147,6 +147,51 @@ class ApprovalControllerTest {
     }
 
     @Test
+    void listIncludesMakerIdAndEligibleRolesForCurrentStage() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("list-maker-1", "transfer-single-checker")));
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("list-maker-2", "transfer-auto-release")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId=='list-maker-1')].makerId", is(List.of("maker-1"))))
+                .andExpect(jsonPath("$[?(@.requestId=='list-maker-1')].eligibleRoles",
+                        is(List.of(List.of("TRANSFER_CHECKER")))))
+                .andExpect(jsonPath("$[?(@.requestId=='list-maker-2')].eligibleRoles",
+                        is(List.of(List.of()))));
+    }
+
+    @Test
+    void mineFilterScopesToRequestsTheGivenRoleCanActOn() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("mine-checker", "transfer-single-checker")));
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("mine-auto", "transfer-auto-release")));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/approvals?mine=true")
+                        .header("X-Actor-Role", "TRANSFER_CHECKER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[?(@.requestId=='mine-checker')]").exists())
+                .andExpect(jsonPath("$[?(@.requestId=='mine-auto')]").doesNotExist());
+    }
+
+    @Test
+    void mineFilterWithoutActorRoleHeaderReturns400() throws Exception {
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/approvals?mine=true"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void statusFilterSeparatesPendingFromCompleted() throws Exception {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())

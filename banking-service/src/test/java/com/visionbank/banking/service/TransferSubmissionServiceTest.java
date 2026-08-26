@@ -46,6 +46,11 @@ class TransferSubmissionServiceTest {
     @BeforeEach
     void startStub() {
         engineStub.start();
+        // All amounts used below fall in the auto-release tier -- PolicyResolver
+        // now resolves the workflow via approval-engine's own /policy-rules/resolve
+        // rather than computing it locally.
+        engineStub.stubFor(get(urlPathEqualTo("/policy-rules/resolve"))
+                .willReturn(okJson("{\"workflowId\":\"transfer-auto-release\",\"workflowVersion\":1}")));
     }
 
     @AfterEach
@@ -59,23 +64,23 @@ class TransferSubmissionServiceTest {
     }
 
     @Test
-    void engineReturningApprovedStillLeavesTransferWaitingForApproval() {
+    void engineReturningApprovedStillLeavesTransferPendingApproval() {
         engineStub.stubFor(post(urlEqualTo("/approvals"))
                 .willReturn(okJson("{\"requestId\":\"whatever\",\"state\":\"APPROVED\",\"version\":1}")));
 
         TransferView view = service.submit(smallTransfer(), UUID.randomUUID().toString());
 
-        assertThat(transfers.findById(view.transferId()).get().getState()).isEqualTo(TransferState.WAITING_FOR_APPROVAL);
+        assertThat(transfers.findById(view.transferId()).get().getState()).isEqualTo(TransferState.PENDING_APPROVAL);
     }
 
     @Test
-    void engineReturningPendingApprovalLeavesTransferWaitingForApproval() {
+    void engineReturningPendingApprovalLeavesTransferPendingApproval() {
         engineStub.stubFor(post(urlEqualTo("/approvals"))
                 .willReturn(okJson("{\"requestId\":\"whatever\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
 
         TransferView view = service.submit(smallTransfer(), UUID.randomUUID().toString());
 
-        assertThat(transfers.findById(view.transferId()).get().getState()).isEqualTo(TransferState.WAITING_FOR_APPROVAL);
+        assertThat(transfers.findById(view.transferId()).get().getState()).isEqualTo(TransferState.PENDING_APPROVAL);
     }
 
     @Test
@@ -104,7 +109,7 @@ class TransferSubmissionServiceTest {
     @Test
     void resumingAfterCrashReusesThePersistedTransferIdAndExpiresAtWithoutReValidating() {
         // Simulates a crash after persistCreated() committed but before the
-        // engine call/markWaitingForApproval completed: pre-create the CREATED
+        // engine call/markPendingApproval completed: pre-create the CREATED
         // row directly via the persistence service, with a fixed expiresAt.
         Instant fixedExpiresAt = Instant.parse("2030-01-01T00:00:00Z");
         Transfer created = persistenceService.persistCreated("resume-1", smallTransfer(), "resume-key", fixedExpiresAt);
@@ -116,7 +121,7 @@ class TransferSubmissionServiceTest {
         TransferView view = service.submit(smallTransfer(), "resume-key");
 
         assertThat(view.transferId()).isEqualTo("resume-1");
-        assertThat(transfers.findById("resume-1").get().getState()).isEqualTo(TransferState.WAITING_FOR_APPROVAL);
+        assertThat(transfers.findById("resume-1").get().getState()).isEqualTo(TransferState.PENDING_APPROVAL);
         engineStub.verify(1, postRequestedFor(urlEqualTo("/approvals"))
                 .withRequestBody(containing("2030-01-01T00:00:00Z")));
     }

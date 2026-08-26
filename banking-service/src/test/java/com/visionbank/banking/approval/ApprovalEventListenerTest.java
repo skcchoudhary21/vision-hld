@@ -45,7 +45,7 @@ class ApprovalEventListenerTest {
         t.setToAccount("ACC-DEST");
         t.setAmountMinorUnits(1000_00L);
         t.setCurrency("AED");
-        t.setState(TransferState.WAITING_FOR_APPROVAL);
+        t.setState(TransferState.PENDING_APPROVAL);
         t.setApprovalRequestId(approvalRequestId);
         t.setIdempotencyKey(UUID.randomUUID().toString());
         t.setExpiresAt(Instant.now().plusSeconds(86400));
@@ -113,7 +113,7 @@ class ApprovalEventListenerTest {
     @Test
     void retryAfterLinkingSucceeds() {
         Transfer t = createdTransfer("t-created-2");
-        t.setState(TransferState.WAITING_FOR_APPROVAL);
+        t.setState(TransferState.PENDING_APPROVAL);
         t.setApprovalRequestId("t-created-2");
         transfers.save(t);
         String eventId = UUID.randomUUID().toString();

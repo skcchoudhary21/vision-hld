@@ -1,8 +1,10 @@
 package com.visionbank.banking.approval;
 
+import com.visionbank.banking.policy.WorkflowSelection;
 import com.visionbank.banking.ui.ApprovalStateDto;
 import com.visionbank.banking.ui.ApprovalSummaryDto;
 import com.visionbank.banking.ui.AuditEntryDto;
+import com.visionbank.banking.ui.PolicyRuleDto;
 import com.visionbank.banking.ui.WorkflowDefinitionDto;
 import com.visionbank.banking.ui.WorkflowSummaryDto;
 import com.visionbank.banking.ui.WorkflowViewDto;
@@ -35,6 +37,24 @@ public class ApprovalEngineClient {
                 .baseUrl(baseUrl)
                 .requestFactory(factory)
                 .build();
+    }
+
+    public WorkflowSelection resolvePolicy(long amountMinorUnits) {
+        PolicyResolutionDto resolution = restClient.get()
+                .uri("/policy-rules/resolve?amountMinorUnits={amount}", amountMinorUnits)
+                .retrieve()
+                .body(PolicyResolutionDto.class);
+        return new WorkflowSelection(resolution.workflowId(), resolution.workflowVersion());
+    }
+
+    public java.util.List<PolicyRuleDto> getPolicyRules() {
+        return restClient.get().uri("/policy-rules").retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<java.util.List<PolicyRuleDto>>() {});
+    }
+
+    public java.util.List<PolicyRuleDto> replacePolicyRules(java.util.List<PolicyRuleDto> rules) {
+        return restClient.put().uri("/policy-rules").body(rules).retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<java.util.List<PolicyRuleDto>>() {});
     }
 
     public WorkflowResponse createWorkflow(CreateWorkflowRequest req, String idempotencyKey) {
@@ -79,8 +99,10 @@ public class ApprovalEngineClient {
         return restClient.get().uri("/approvals/{id}/workflow-view", id).retrieve().body(WorkflowViewDto.class);
     }
 
-    public List<ApprovalSummaryDto> getApprovalsList(String status) {
-        return restClient.get().uri("/approvals?status={status}", status).retrieve()
+    public List<ApprovalSummaryDto> getApprovalsList(String status, boolean mine, String actorRole) {
+        return restClient.get().uri("/approvals?status={status}&mine={mine}", status, mine)
+                .header("X-Actor-Role", actorRole)
+                .retrieve()
                 .body(new org.springframework.core.ParameterizedTypeReference<List<ApprovalSummaryDto>>() {});
     }
 

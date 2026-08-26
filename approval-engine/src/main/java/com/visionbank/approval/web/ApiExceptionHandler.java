@@ -1,5 +1,6 @@
 package com.visionbank.approval.web;
 
+import com.visionbank.approval.policy.PolicyRuleNotFoundException;
 import com.visionbank.approval.service.*;
 import com.visionbank.approval.web.dto.ErrorResponseDto;
 import org.springframework.http.HttpStatus;
@@ -50,5 +51,11 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErrorResponseDto> handle(WorkflowNotFoundException e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ErrorResponseDto("WORKFLOW_NOT_FOUND", null, null, null));
+    }
+
+    @ExceptionHandler(PolicyRuleNotFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handle(PolicyRuleNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponseDto("POLICY_RULE_NOT_FOUND", null, null, null));
     }
 }

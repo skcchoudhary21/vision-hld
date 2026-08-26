@@ -28,32 +28,32 @@ transitions:
     from: SECURITY_REVIEW
     to: MANAGER_APPROVAL
     guards: [approvals_satisfied, actor_is_not_maker]
-    allowedRoles: [SECURITY]
+    allowedRoles: [SECURITY_CHECKER]
     requiredApprovals: 1
   - name: approve
     from: MANAGER_APPROVAL
     to: COMPLIANCE_REVIEW
     guards: [approvals_satisfied, actor_is_not_maker]
-    allowedRoles: [MANAGER]
+    allowedRoles: [MANAGER_CHECKER]
     requiredApprovals: 1
   - name: approve
     from: COMPLIANCE_REVIEW
     to: APPROVED
     guards: [approvals_satisfied, actor_is_not_maker]
-    allowedRoles: [COMPLIANCE]
+    allowedRoles: [COMPLIANCE_CHECKER]
     requiredApprovals: 1
   - name: reject
     from: SECURITY_REVIEW
     to: REJECTED
-    allowedRoles: [SECURITY]
+    allowedRoles: [SECURITY_CHECKER]
   - name: reject
     from: MANAGER_APPROVAL
     to: REJECTED
-    allowedRoles: [MANAGER]
+    allowedRoles: [MANAGER_CHECKER]
   - name: reject
     from: COMPLIANCE_REVIEW
     to: REJECTED
-    allowedRoles: [COMPLIANCE]
+    allowedRoles: [COMPLIANCE_CHECKER]
   - name: expire
     from: SECURITY_REVIEW
     to: EXPIRED

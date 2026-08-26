@@ -49,7 +49,7 @@ class ConvergenceTest {
         t.setToAccount("ACC-DEST");
         t.setAmountMinorUnits(1000_00L);
         t.setCurrency("AED");
-        t.setState(TransferState.WAITING_FOR_APPROVAL);
+        t.setState(TransferState.PENDING_APPROVAL);
         t.setApprovalRequestId(approvalRequestId);
         t.setIdempotencyKey(UUID.randomUUID().toString());
         t.setExpiresAt(Instant.now().plusSeconds(86400));

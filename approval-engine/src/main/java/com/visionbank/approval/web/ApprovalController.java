@@ -135,8 +135,17 @@ public class ApprovalController {
                 .anyMatch(t -> t.to().equals(state) && t.name().toLowerCase().contains("approve"));
     }
 
+    // "mine" scopes the list server-side to whatever the calling actor's role
+    // can act on right now (eligibleRoles reflects the CURRENT stage only) --
+    // moved here from a client-side .filter() so the browser isn't downloading
+    // every request in the system just to throw most of it away locally.
     @GetMapping
-    public List<ApprovalRequestSummaryDto> list(@RequestParam(required = false, defaultValue = "all") String status) {
+    public List<ApprovalRequestSummaryDto> list(@RequestParam(required = false, defaultValue = "all") String status,
+                                                 @RequestParam(required = false, defaultValue = "false") boolean mine,
+                                                 @RequestHeader(value = "X-Actor-Role", required = false) String actorRole) {
+        if (mine && actorRole == null) {
+            throw new InvalidRequestException("X-Actor-Role header is required when mine=true");
+        }
         return requests.findAllByOrderByCreatedAtDesc().stream()
                 .map(this::toSummary)
                 .filter(s -> switch (status) {
@@ -144,6 +153,7 @@ public class ApprovalController {
                     case "completed" -> s.terminal();
                     default -> true;
                 })
+                .filter(s -> !mine || s.eligibleRoles().contains(actorRole))
                 .toList();
     }
 
@@ -166,7 +176,12 @@ public class ApprovalController {
                 : (int) decisions.countByRequestIdAndDecisionAndState(
                         request.getRequestId(), ApprovalDecision.DecisionType.APPROVE, currentState);
 
-        return new ApprovalRequestSummaryDto(request.getRequestId(), workflow.name(), workflow.version(),
-                currentState, label, terminal, requiredApprovals, currentApprovals, request.getCreatedAt());
+        List<String> eligibleRoles = workflow.transitionsFrom(currentState).stream()
+                .flatMap(t -> t.allowedRoles().stream())
+                .distinct()
+                .toList();
+
+        return new ApprovalRequestSummaryDto(request.getRequestId(), request.getMakerId(), workflow.name(), workflow.version(),
+                currentState, label, terminal, requiredApprovals, currentApprovals, eligibleRoles, request.getCreatedAt());
     }
 }

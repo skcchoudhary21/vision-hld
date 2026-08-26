@@ -44,8 +44,8 @@ class PrivilegedAccessConcurrencyTest {
     @Test
     void twoActorsApprovingTheSameStageConcurrently_exactlyOneWins() throws Exception {
         String id = create("race-2");
-        service.approve(id, "sec-1", "SECURITY"); // -> MANAGER_APPROVAL
-        service.approve(id, "mgr-1", "MANAGER");   // -> COMPLIANCE_REVIEW
+        service.approve(id, "sec-1", "SECURITY_CHECKER"); // -> MANAGER_APPROVAL
+        service.approve(id, "mgr-1", "MANAGER_CHECKER");   // -> COMPLIANCE_REVIEW
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);
@@ -54,12 +54,12 @@ class PrivilegedAccessConcurrencyTest {
         var f1 = pool.submit(() -> {
             ready.countDown();
             go.await();
-            return service.approve(id, "comp-1", "COMPLIANCE");
+            return service.approve(id, "comp-1", "COMPLIANCE_CHECKER");
         });
         var f2 = pool.submit(() -> {
             ready.countDown();
             go.await();
-            return service.approve(id, "comp-2", "COMPLIANCE");
+            return service.approve(id, "comp-2", "COMPLIANCE_CHECKER");
         });
         ready.await();
         go.countDown();
@@ -89,14 +89,14 @@ class PrivilegedAccessConcurrencyTest {
     @Test
     void rejectingAStageAlreadyApprovedPastIsClassifiedAsARaceNotIllegal() {
         String id = create("race-3");
-        service.approve(id, "sec-1", "SECURITY");   // -> MANAGER_APPROVAL
-        service.approve(id, "mgr-1", "MANAGER");     // -> COMPLIANCE_REVIEW
-        service.approve(id, "comp-1", "COMPLIANCE"); // -> APPROVED, terminal, no "reject" from here
+        service.approve(id, "sec-1", "SECURITY_CHECKER");   // -> MANAGER_APPROVAL
+        service.approve(id, "mgr-1", "MANAGER_CHECKER");     // -> COMPLIANCE_REVIEW
+        service.approve(id, "comp-1", "COMPLIANCE_CHECKER"); // -> APPROVED, terminal, no "reject" from here
 
         // A stale actor attempting "reject" after the row reached a terminal state with no
         // reject transition from it must get CONCURRENT_STATE_CHANGE (this action WAS legal
         // somewhere along the way, just lost the race entirely), not INVALID_STATE_TRANSITION.
-        assertThatThrownBy(() -> service.reject(id, "sec-stale", "SECURITY"))
+        assertThatThrownBy(() -> service.reject(id, "sec-stale", "SECURITY_CHECKER"))
                 .isInstanceOf(ConcurrentStateChangeException.class);
     }
 
