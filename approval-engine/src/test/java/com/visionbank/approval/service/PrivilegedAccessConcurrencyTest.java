@@ -2,7 +2,6 @@ package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.domain.StagePolicy;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,25 +49,6 @@ class PrivilegedAccessConcurrencyTest {
     }
 
     @Test
-    void approvingAStageAlreadyMovedPastIsAConcurrentStateChange() throws Exception {
-        String id = create("race-1");
-        service.approve(id, "sec-1", "SECURITY"); // moves to MANAGER_APPROVAL
-
-        // A second, stale attempt at the SECURITY_REVIEW gate the row already left --
-        // genuinely raced: this action WAS valid when presumably read, lost to the above.
-        assertThatThrownBy(() -> {
-            // Simulate a stale read by manually re-deriving what approve() would see:
-            // reject() from the already-passed SECURITY_REVIEW stage is impossible to
-            // literally re-attempt via the public API once the row has moved on, so this
-            // test instead proves the illegal-vs-race split at the state actually reached:
-            // rejecting at MANAGER_APPROVAL after SECURITY_REVIEW's own reject transition
-            // was already consumed by an approval is exercised by the next two tests,
-            // which race real concurrent threads.
-            throw new IllegalStateException("see concurrent tests below");
-        }).isInstanceOf(IllegalStateException.class);
-    }
-
-    @Test
     void twoActorsApprovingTheSameStageConcurrently_exactlyOneWins() throws Exception {
         String id = create("race-2");
         service.approve(id, "sec-1", "SECURITY"); // -> MANAGER_APPROVAL
@@ -92,10 +72,11 @@ class PrivilegedAccessConcurrencyTest {
         go.countDown();
 
         // required=1 for COMPLIANCE_REVIEW, the last stage before the terminal APPROVED:
-        // whichever commits first satisfies quorum and reaches APPROVED (no further "approve"
-        // transition exists from there), so the second's guardedTransition attempt genuinely
-        // fails and lands in classifyRaceOrIllegal -- unlike a mid-chain stage, there's no
-        // real-but-wrong-role transition to mask the race as a plain Forbidden.
+        // whichever commits first satisfies quorum and reaches APPROVED; the loser's own
+        // initial read (after acquiring the row lock, which the winner already released)
+        // already sees the post-commit APPROVED state, finds no "approve" transition from
+        // a terminal state, and classifyRaceOrIllegal correctly resolves it as a race
+        // rather than illegal.
         int successes = 0;
         Exception caught = null;
         for (var f : List.of(f1, f2)) {

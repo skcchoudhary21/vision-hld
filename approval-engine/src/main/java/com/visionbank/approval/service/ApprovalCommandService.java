@@ -14,8 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Optional;
+import java.util.Queue;
 
 @Service
 public class ApprovalCommandService {
@@ -142,7 +146,7 @@ public class ApprovalCommandService {
                 .findFirst()
                 .orElse(null);
         if (transition == null) {
-            throw classifyRaceOrIllegal(requestId, currentState, request.getVersion(), "approve");
+            throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "approve");
         }
 
         GuardContext eligibility = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0,
@@ -188,7 +192,7 @@ public class ApprovalCommandService {
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
-            throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "approve");
+            throw classifyRaceOrIllegal(requestId, workflow, latest.getState(), latest.getVersion(), "approve");
         }
 
         writeAudit(requestId, actorId, actorRole, "APPROVED", currentState, transition.to());
@@ -207,7 +211,7 @@ public class ApprovalCommandService {
                 .findFirst()
                 .orElse(null);
         if (transition == null) {
-            throw classifyRaceOrIllegal(requestId, currentState, request.getVersion(), "reject");
+            throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "reject");
         }
 
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, actorRole, false, currentState);
@@ -218,7 +222,7 @@ public class ApprovalCommandService {
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
-            throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "reject");
+            throw classifyRaceOrIllegal(requestId, workflow, latest.getState(), latest.getVersion(), "reject");
         }
         writeAudit(requestId, actorId, actorRole, "REJECTED", currentState, transition.to());
         fireEvents(workflow, requestId, transition.to());
@@ -236,7 +240,7 @@ public class ApprovalCommandService {
                 .findFirst()
                 .orElse(null);
         if (transition == null) {
-            throw classifyRaceOrIllegal(requestId, currentState, request.getVersion(), "cancel");
+            throw classifyRaceOrIllegal(requestId, workflow, currentState, request.getVersion(), "cancel");
         }
 
         GuardContext ctx = new GuardContext(request.getMakerId(), request.getPolicySnapshot(), 0, actorId, "MAKER", false, currentState);
@@ -247,7 +251,7 @@ public class ApprovalCommandService {
         int rows = requests.guardedTransition(requestId, currentState, request.getVersion(), transition.to());
         if (rows == 0) {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
-            throw classifyRaceOrIllegal(requestId, latest.getState(), latest.getVersion(), "cancel");
+            throw classifyRaceOrIllegal(requestId, workflow, latest.getState(), latest.getVersion(), "cancel");
         }
         writeAudit(requestId, actorId, "MAKER", "CANCELLED", currentState, transition.to());
         fireEvents(workflow, requestId, transition.to());
@@ -272,26 +276,17 @@ public class ApprovalCommandService {
     }
 
     /**
-     * A current state is a "lost race" (409 CONCURRENT_STATE_CHANGE) if the actor's
-     * target action was legal at the moment they presumably read the row -- i.e. `current`
-     * is graph-reachable from some state that `action` could plausibly have started from,
-     * via zero or more further legal transitions. Otherwise the action could never have
-     * applied to this row regardless of timing (409 INVALID_STATE_TRANSITION).
-     *
-     * Reachability is computed via real BFS shortest-path over the request's own resolved
-     * WorkflowDefinition, not hardcoded to any particular workflow's shape (see spec §7 /
-     * Task 6 brief). When more than one candidate start reaches `current`, and at different
-     * hop counts, currentVersion (the number of transitions actually taken on this row)
-     * disambiguates a genuine multi-step race from a shortcut path that never involved a
-     * real decision at the actor's target stage.
+     * A "lost race" (409 CONCURRENT_STATE_CHANGE) is a `current` state reachable from some
+     * state `action` could have started from -- the action was legal when presumably read,
+     * just lost the race. Otherwise it's 409 INVALID_STATE_TRANSITION. Reachability is BFS
+     * shortest-path over the workflow's own graph, not hardcoded to any one workflow's shape.
+     * When a shortcut to `current` bypasses `action`'s stage entirely, currentVersion (hops
+     * actually taken on this row) disambiguates: matching the shortcut's length means this
+     * row took the shortcut and never saw `action`'s stage (illegal); anything else is a race.
      */
-    private RuntimeException classifyRaceOrIllegal(String requestId, String current, long currentVersion, String action) {
-        WorkflowDefinition workflow = workflowRegistry.get(requests.findByRequestId(requestId).orElseThrow().getWorkflowId());
-
-        // Every state this action-type could plausibly have started from: any `from`
-        // of a transition named `action`, anywhere in the workflow. If none exist at
-        // all, the action never applies to this workflow regardless of state or timing.
-        java.util.List<String> candidateStarts = workflow.transitions().stream()
+    private RuntimeException classifyRaceOrIllegal(String requestId, WorkflowDefinition workflow, String current,
+                                                     long currentVersion, String action) {
+        List<String> candidateStarts = workflow.transitions().stream()
                 .filter(t -> t.name().equals(action))
                 .map(Transition::from)
                 .distinct()
@@ -301,9 +296,6 @@ public class ApprovalCommandService {
             return new InvalidStateTransitionException(requestId, current, action);
         }
 
-        // Shortest total path (in transitions, from the workflow's true initialState) that
-        // passes through some state where `action` was actually available: hops to reach a
-        // candidate start, plus hops from there on to `current`.
         int shortestViaCandidateStart = Integer.MAX_VALUE;
         boolean reachableViaCandidateStart = false;
         for (String start : candidateStarts) {
@@ -319,19 +311,8 @@ public class ApprovalCommandService {
             return new InvalidStateTransitionException(requestId, current, action);
         }
 
-        // Shortest path from the workflow's true initialState to `current` via ANY
-        // transitions at all, regardless of name -- catches shortcuts like transfer-approval's
-        // auto_approve, which reach a shared terminal state without ever passing through
-        // `action`'s own stage.
         int shortestFromInitialState = shortestPathLength(workflow, workflow.initialState(), current);
 
-        // A strictly shorter shortcut bypasses `action`'s stage entirely: ambiguous. currentVersion
-        // is exactly the number of transitions actually taken on this row -- if it matches the
-        // shortcut's length precisely, this row took the shortcut and never passed through a state
-        // where `action` applied, regardless of when this call arrived (illegal). Any other version
-        // means real decisions happened beyond the shortcut -- a genuine race. When no such shortcut
-        // exists (every path to `current` passes through a candidate start), there's nothing to
-        // disambiguate and it's a legitimate race regardless of version.
         if (shortestFromInitialState >= 0 && shortestFromInitialState < shortestViaCandidateStart) {
             return currentVersion == shortestFromInitialState
                     ? new InvalidStateTransitionException(requestId, current, action)
@@ -344,8 +325,8 @@ public class ApprovalCommandService {
         if (from.equals(to)) {
             return 0;
         }
-        java.util.Queue<String> frontier = new java.util.ArrayDeque<>();
-        java.util.Map<String, Integer> distance = new java.util.HashMap<>();
+        Queue<String> frontier = new ArrayDeque<>();
+        HashMap<String, Integer> distance = new HashMap<>();
         frontier.add(from);
         distance.put(from, 0);
         while (!frontier.isEmpty()) {
