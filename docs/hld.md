@@ -60,7 +60,7 @@ state machine never depends on Banking's reachability, only async delivery does.
 ## NFRs
 
 - **Idempotency:** `Idempotency-Key` on submission/create (replay or `409
-  IDEMPOTENCY_CONFLICT` on mismatch); decisions idempotent per `(request_id, actor_id)`;
+  IDEMPOTENCY_CONFLICT` on mismatch); decisions idempotent per `(request_id, actor_id, state)`;
   release idempotent on `transferId`.
 - **Concurrency:** every competing transition resolves via one guarded UPDATE plus a
   quorum-counting row lock — mechanism and tests in the LLD's "Concurrency" section.
