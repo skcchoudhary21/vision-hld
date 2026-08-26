@@ -46,6 +46,21 @@ public class UiController {
         return approvalEngineClient.getWorkflowView(id);
     }
 
+    @GetMapping("/approvals")
+    public List<ApprovalSummaryDto> listApprovals(@RequestParam(required = false, defaultValue = "all") String status) {
+        return approvalEngineClient.getApprovalsList(status);
+    }
+
+    @GetMapping("/workflows")
+    public List<WorkflowSummaryDto> listWorkflows() {
+        return approvalEngineClient.getWorkflowsList();
+    }
+
+    @GetMapping("/workflows/{id}/{version}")
+    public WorkflowDefinitionDto getWorkflow(@PathVariable String id, @PathVariable int version) {
+        return approvalEngineClient.getWorkflowDefinition(id, version);
+    }
+
     @PostMapping("/approvals/{id}/{action}")
     public ApprovalStateDto decide(@PathVariable String id, @PathVariable String action,
                                     @RequestBody ActorRequest body) {

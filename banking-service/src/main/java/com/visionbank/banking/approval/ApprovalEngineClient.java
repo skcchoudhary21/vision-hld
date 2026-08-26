@@ -1,7 +1,10 @@
 package com.visionbank.banking.approval;
 
 import com.visionbank.banking.ui.ApprovalStateDto;
+import com.visionbank.banking.ui.ApprovalSummaryDto;
 import com.visionbank.banking.ui.AuditEntryDto;
+import com.visionbank.banking.ui.WorkflowDefinitionDto;
+import com.visionbank.banking.ui.WorkflowSummaryDto;
 import com.visionbank.banking.ui.WorkflowViewDto;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
@@ -74,5 +77,20 @@ public class ApprovalEngineClient {
 
     public WorkflowViewDto getWorkflowView(String id) {
         return restClient.get().uri("/approvals/{id}/workflow-view", id).retrieve().body(WorkflowViewDto.class);
+    }
+
+    public List<ApprovalSummaryDto> getApprovalsList(String status) {
+        return restClient.get().uri("/approvals?status={status}", status).retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<List<ApprovalSummaryDto>>() {});
+    }
+
+    public List<WorkflowSummaryDto> getWorkflowsList() {
+        return restClient.get().uri("/workflows").retrieve()
+                .body(new org.springframework.core.ParameterizedTypeReference<List<WorkflowSummaryDto>>() {});
+    }
+
+    public WorkflowDefinitionDto getWorkflowDefinition(String workflowId, int version) {
+        return restClient.get().uri("/workflows/{id}/{version}", workflowId, version)
+                .retrieve().body(WorkflowDefinitionDto.class);
     }
 }
