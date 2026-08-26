@@ -45,4 +45,10 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ErrorResponseDto("INVALID_REQUEST", null, null, null));
     }
+
+    @ExceptionHandler(WorkflowNotFoundException.class)
+    public ResponseEntity<ErrorResponseDto> handle(WorkflowNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponseDto("WORKFLOW_NOT_FOUND", null, null, null));
+    }
 }
