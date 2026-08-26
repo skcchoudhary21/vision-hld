@@ -6,7 +6,7 @@ import com.visionbank.banking.approval.WorkflowResponse;
 import com.visionbank.banking.corebanking.CoreBankingClient;
 import com.visionbank.banking.corebanking.ValidationResult;
 import com.visionbank.banking.domain.Transfer;
-import com.visionbank.banking.policy.ApprovalPolicy;
+import com.visionbank.banking.policy.WorkflowSelection;
 import com.visionbank.banking.policy.PolicyResolver;
 import com.visionbank.banking.repository.TransferRepository;
 import org.springframework.stereotype.Service;
@@ -63,16 +63,16 @@ public class TransferSubmissionService {
     }
 
     private TransferView completeWorkflowCreation(Transfer transfer, SubmitTransferCommand cmd) {
-        ApprovalPolicy policy = policyResolver.resolve(cmd.amountMinorUnits());
+        WorkflowSelection selection = policyResolver.resolve(cmd.amountMinorUnits());
         CreateWorkflowRequest workflowRequest = new CreateWorkflowRequest(
-                transfer.getTransferId(), "TRANSFER_APPROVAL", cmd.makerId(), policy,
+                transfer.getTransferId(), "TRANSFER_APPROVAL", cmd.makerId(), selection,
                 "{\"transferId\":\"" + transfer.getTransferId() + "\",\"amount\":" + cmd.amountMinorUnits() + "}",
                 transfer.getExpiresAt()); // persisted value — never recomputed on retry
         WorkflowResponse workflowResponse = approvalEngineClient.createWorkflow(workflowRequest, transfer.getTransferId());
 
         // Always WAITING_FOR_APPROVAL here regardless of workflowResponse.state() —
-        // release is only ever triggered by consuming ApprovalApproved (Task 14),
-        // so auto-release and N-approver release share one trigger path.
+        // release is only ever triggered by consuming ApprovalApproved, so auto-release
+        // and N-approver release share one trigger path.
         Transfer completed = persistenceService.markWaitingForApproval(transfer.getTransferId(), workflowResponse.requestId());
         return new TransferView(completed.getTransferId(), completed.getState());
     }

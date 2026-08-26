@@ -35,20 +35,13 @@ public class ApprovalEngineClient {
     }
 
     public WorkflowResponse createWorkflow(CreateWorkflowRequest req, String idempotencyKey) {
-        Map<String, Object> stagePolicy = Map.of(
-                "requiredApprovals", req.policy().requiredApprovals(),
-                "eligibleRoles", req.policy().eligibleRoles());
-        // "PENDING_APPROVAL" is hardcoded deliberately: transfer-approval's one
-        // approval-gate stage id, which this caller has to know either way per
-        // the spec's "caller resolves policy, must know the target workflow's
-        // stage ids" principle. banking-service only ever submits
-        // TRANSFER_APPROVAL requests in this codebase.
         Map<String, Object> body = Map.of(
                 "requestId", req.requestId(),
                 "requestType", req.requestType(),
                 "makerId", req.makerId(),
-                "stagePolicies", Map.of("PENDING_APPROVAL", stagePolicy),
-                "makerCanApprove", req.policy().makerCanApprove(),
+                "workflowId", req.workflow().workflowId(),
+                "workflowVersion", req.workflow().workflowVersion(),
+                "policyVersion", "v1",
                 "payloadJson", req.payloadJson(),
                 "expiresAt", req.expiresAt().toString());
 

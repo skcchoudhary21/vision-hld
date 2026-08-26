@@ -9,25 +9,21 @@ class PolicyResolverTest {
     private final PolicyResolver resolver = new PolicyResolver(500000L, 5000000L);
 
     @Test
-    void belowAutoReleaseCeilingRequiresNoApprovals() {
-        ApprovalPolicy policy = resolver.resolve(100000L);
-        assertThat(policy.requiredApprovals()).isEqualTo(0);
+    void belowAutoReleaseCeilingSelectsAutoReleaseWorkflow() {
+        WorkflowSelection selection = resolver.resolve(100000L);
+        assertThat(selection.workflowId()).isEqualTo("transfer-auto-release");
+        assertThat(selection.workflowVersion()).isEqualTo(1);
     }
 
     @Test
-    void betweenCeilingsRequiresOneApproval() {
-        ApprovalPolicy policy = resolver.resolve(1000000L);
-        assertThat(policy.requiredApprovals()).isEqualTo(1);
+    void betweenCeilingsSelectsSingleCheckerWorkflow() {
+        WorkflowSelection selection = resolver.resolve(1000000L);
+        assertThat(selection.workflowId()).isEqualTo("transfer-single-checker");
     }
 
     @Test
-    void atOrAboveSingleCheckerCeilingRequiresTwoApprovals() {
-        ApprovalPolicy policy = resolver.resolve(5000000L);
-        assertThat(policy.requiredApprovals()).isEqualTo(2);
-    }
-
-    @Test
-    void makerCanNeverApproveUnderThisPolicy() {
-        assertThat(resolver.resolve(1000000L).makerCanApprove()).isFalse();
+    void atOrAboveSingleCheckerCeilingSelectsHighValueWorkflow() {
+        WorkflowSelection selection = resolver.resolve(5000000L);
+        assertThat(selection.workflowId()).isEqualTo("transfer-high-value");
     }
 }

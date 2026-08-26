@@ -1,14 +1,13 @@
 package com.visionbank.banking.approval;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
-import com.visionbank.banking.policy.ApprovalPolicy;
+import com.visionbank.banking.policy.WorkflowSelection;
 import com.visionbank.banking.ui.WorkflowViewDto;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.UUID;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -37,7 +36,7 @@ class ApprovalEngineClientTest {
                 .willReturn(okJson("{\"requestId\":\"req-1\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
 
         CreateWorkflowRequest req = new CreateWorkflowRequest("req-1", "TRANSFER_APPROVAL", "maker-1",
-                new ApprovalPolicy(1, List.of("TRANSFER_CHECKER"), false), "{}", Instant.now().plusSeconds(86400));
+                new WorkflowSelection("transfer-single-checker", 1), "{}", Instant.now().plusSeconds(86400));
 
         WorkflowResponse response = client.createWorkflow(req, UUID.randomUUID().toString());
 
@@ -45,8 +44,8 @@ class ApprovalEngineClientTest {
         assertThat(response.state()).isEqualTo("PENDING_APPROVAL");
         wireMock.verify(postRequestedFor(urlEqualTo("/approvals"))
                 .withHeader("Idempotency-Key", matching(".+"))
-                .withRequestBody(matchingJsonPath("$.stagePolicies.PENDING_APPROVAL.requiredApprovals", equalTo("1")))
-                .withRequestBody(matchingJsonPath("$.stagePolicies.PENDING_APPROVAL.eligibleRoles[0]", equalTo("TRANSFER_CHECKER"))));
+                .withRequestBody(matchingJsonPath("$.workflowId", equalTo("transfer-single-checker")))
+                .withRequestBody(matchingJsonPath("$.workflowVersion", equalTo("1"))));
     }
 
     @Test

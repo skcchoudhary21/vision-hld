@@ -3,8 +3,6 @@ package com.visionbank.banking.policy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-
 @Component
 public class PolicyResolver {
 
@@ -17,13 +15,13 @@ public class PolicyResolver {
         this.singleCheckerCeiling = singleCheckerCeiling;
     }
 
-    public ApprovalPolicy resolve(long amountMinorUnits) {
+    public WorkflowSelection resolve(long amountMinorUnits) {
         if (amountMinorUnits < autoReleaseCeiling) {
-            return new ApprovalPolicy(0, List.of(), false);
+            return new WorkflowSelection("transfer-auto-release", 1);
         }
         if (amountMinorUnits < singleCheckerCeiling) {
-            return new ApprovalPolicy(1, List.of("TRANSFER_CHECKER"), false);
+            return new WorkflowSelection("transfer-single-checker", 1);
         }
-        return new ApprovalPolicy(2, List.of("TRANSFER_CHECKER"), false);
+        return new WorkflowSelection("transfer-high-value", 1);
     }
 }
