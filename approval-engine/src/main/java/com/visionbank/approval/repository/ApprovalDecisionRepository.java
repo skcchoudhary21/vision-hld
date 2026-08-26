@@ -3,8 +3,15 @@ package com.visionbank.approval.repository;
 import com.visionbank.approval.domain.ApprovalDecision;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.List;
+
 public interface ApprovalDecisionRepository extends JpaRepository<ApprovalDecision, String> {
     long countByRequestIdAndDecisionAndState(String requestId, ApprovalDecision.DecisionType decision, String state);
+
+    // Backs GET /approvals/{id}/workflow-view (Task 7): the current stage's individual
+    // decisions, so a UI can render who's approved/rejected at this stage without any
+    // hardcoded knowledge of the workflow's shape.
+    List<ApprovalDecision> findByRequestIdAndState(String requestId, String state);
 
     // State-scoped: the PRIMARY idempotency check in approve() -- an actor's decision at one
     // stage must not block that same actor from deciding again at a LATER stage of the same

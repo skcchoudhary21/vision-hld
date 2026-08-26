@@ -78,6 +78,24 @@ class ApprovalControllerTest {
     }
 
     @Test
+    void workflowViewShowsStageProgressForAPendingRequest() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("ctrl-4", 2)));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/approvals/ctrl-4/workflow-view"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentState", is("PENDING_APPROVAL")))
+                .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].status", is(List.of("IN_PROGRESS"))))
+                .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].requiredApprovals", is(List.of(2))))
+                .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].completedApprovals", is(List.of(0))))
+                .andExpect(jsonPath("$.stages[?(@.id=='PENDING_APPROVAL')].approvals[0]").doesNotExist())
+                .andExpect(jsonPath("$.stages[?(@.id=='SUBMITTED')].status", is(List.of("COMPLETED"))));
+    }
+
+    @Test
     void getReturnsCurrentStateAndReturns404WhenNotFound() throws Exception {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())

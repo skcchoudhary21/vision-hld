@@ -1,11 +1,16 @@
 package com.visionbank.approval.web;
 
+import com.visionbank.approval.domain.ApprovalRequest;
+import com.visionbank.approval.domain.AuditLog;
 import com.visionbank.approval.domain.PolicySnapshot;
 import com.visionbank.approval.domain.StagePolicy;
+import com.visionbank.approval.repository.ApprovalDecisionRepository;
 import com.visionbank.approval.repository.ApprovalRequestRepository;
 import com.visionbank.approval.repository.AuditLogRepository;
 import com.visionbank.approval.service.*;
 import com.visionbank.approval.web.dto.*;
+import com.visionbank.approval.workflow.WorkflowDefinition;
+import com.visionbank.approval.workflow.WorkflowRegistry;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,12 +24,17 @@ public class ApprovalController {
     private final ApprovalCommandService service;
     private final ApprovalRequestRepository requests;
     private final AuditLogRepository audits;
+    private final WorkflowRegistry workflowRegistry;
+    private final ApprovalDecisionRepository decisions;
 
     public ApprovalController(ApprovalCommandService service, ApprovalRequestRepository requests,
-                               AuditLogRepository audits) {
+                               AuditLogRepository audits, WorkflowRegistry workflowRegistry,
+                               ApprovalDecisionRepository decisions) {
         this.service = service;
         this.requests = requests;
         this.audits = audits;
+        this.workflowRegistry = workflowRegistry;
+        this.decisions = decisions;
     }
 
     @PostMapping
@@ -87,5 +97,55 @@ public class ApprovalController {
                 .map(a -> new AuditLogEntryDto(a.getAction(), a.getPreviousState(), a.getNewState(),
                         a.getActorId(), a.getActorRole(), a.getCreatedAt()))
                 .toList();
+    }
+
+    // Purely additive (Task 7): a generic, data-driven view of a request's workflow
+    // progress -- stage labels, status, per-stage approval counts and individual
+    // decisions -- driven entirely by the request's own resolved WorkflowDefinition,
+    // so a UI can render any workflow shape without hardcoded knowledge of it.
+    @GetMapping("/{id}/workflow-view")
+    public WorkflowViewDto workflowView(@PathVariable String id) {
+        ApprovalRequest request = requests.findByRequestId(id)
+                .orElseThrow(() -> new ApprovalRequestNotFoundException(id));
+        WorkflowDefinition workflow = workflowRegistry.get(request.getWorkflowId());
+        String currentState = request.getState();
+
+        List<StageViewDto> stages = workflow.states().stream()
+                .map(s -> buildStageView(workflow, request, s, currentState))
+                .toList();
+
+        return new WorkflowViewDto(workflow.name(), workflow.version(), currentState,
+                new java.util.ArrayList<>(workflow.terminalStates()), stages);
+    }
+
+    private StageViewDto buildStageView(WorkflowDefinition workflow, ApprovalRequest request,
+                                         WorkflowDefinition.StateDef stateDef, String currentState) {
+        String id = stateDef.id();
+        String status;
+        if (id.equals(currentState)) {
+            status = "IN_PROGRESS";
+        } else if (workflow.isTerminal(id)) {
+            status = id.equals(currentState) ? "IN_PROGRESS" : (hasEverReached(request, id) ? "COMPLETED" : "PENDING");
+        } else {
+            status = hasEverReached(request, id) ? "COMPLETED" : "PENDING";
+        }
+
+        StagePolicy policy = request.getPolicySnapshot().stages().get(id);
+        if (policy == null) {
+            return new StageViewDto(id, stateDef.label(), status, null, null, List.of());
+        }
+
+        List<AuditLog> stageAudits = audits.findByRequestIdOrderByCreatedAtAsc(request.getRequestId());
+        List<DecisionViewDto> approvals = decisions.findByRequestIdAndState(request.getRequestId(), id).stream()
+                .map(d -> new DecisionViewDto(d.getActorId(), d.getActorRole(), d.getDecision().name(), d.getCreatedAt()))
+                .toList();
+        long completed = approvals.stream().filter(a -> a.decision().equals("APPROVE")).count();
+
+        return new StageViewDto(id, stateDef.label(), status, policy.requiredApprovals(), (int) completed, approvals);
+    }
+
+    private boolean hasEverReached(ApprovalRequest request, String stateId) {
+        return audits.findByRequestIdOrderByCreatedAtAsc(request.getRequestId()).stream()
+                .anyMatch(a -> a.getNewState().equals(stateId) || a.getPreviousState().equals(stateId));
     }
 }
