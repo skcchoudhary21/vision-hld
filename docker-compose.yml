@@ -33,8 +33,22 @@ services:
       SPRING_DATASOURCE_USERNAME: banking
       SPRING_DATASOURCE_PASSWORD: banking
       APPROVAL-ENGINE_BASE-URL: http://approval-engine:8081
+      UI_ALLOWED-ORIGIN: http://localhost:3000
     depends_on:
       postgres:
         condition: service_healthy
       approval-engine:
+        condition: service_started
+
+  approval-console-ui:
+    build:
+      context: ./approval-console-ui
+      args:
+        # Baked into the built JS bundle and called from the reviewer's
+        # browser, so this must be the host-published address of
+        # banking-service, not its in-network service name.
+        VITE_API_BASE_URL: http://localhost:8080
+    ports: ["3000:80"]
+    depends_on:
+      banking-service:
         condition: service_started

@@ -15,13 +15,18 @@ If you have an existing local Postgres volume from before, run `docker
 compose down -v` first — this plan added new required columns and widened a
 unique constraint that `ddl-auto: update` can't safely apply to existing data.
 
-Banking Service: http://localhost:8080. Approval Engine: http://localhost:8081.
+**Approval Console UI: http://localhost:3000** — this is the single URL to open;
+it's a React SPA (`approval-console-ui/`) served by nginx, backed by Banking
+Service (http://localhost:8080) and Approval Engine (http://localhost:8081).
+Switch identities via the actor picker in the top nav (maker vs. checker
+roles) to see both sides of the approval flow.
 
-Submit a transfer:
+Submit a transfer directly against the API instead:
 ```bash
 curl -X POST http://localhost:8080/transfers \
   -H "Idempotency-Key: $(uuidgen)" \
   -H "Content-Type: application/json" \
+  -H "X-Actor-Id: maker-1" -H "X-Actor-Role: MAKER" \
   -d '{"makerId":"maker-1","fromAccount":"ACC-FUNDED","toAccount":"ACC-DEST","amountMinorUnits":100000,"currency":"AED"}'
 ```
 Amounts under 5,000.00 auto-release; 5,000–50,000 need 1 checker; 50,000+
