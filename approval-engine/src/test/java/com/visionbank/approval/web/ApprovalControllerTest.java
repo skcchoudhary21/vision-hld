@@ -96,6 +96,25 @@ class ApprovalControllerTest {
     }
 
     @Test
+    void workflowViewShowsFailedStatusForARejectedRequest() throws Exception {
+        mockMvc.perform(post("/approvals")
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(createDto("ctrl-5", 1)));
+
+        mockMvc.perform(post("/approvals/ctrl-5/reject")
+                .contentType("application/json")
+                .content(mapper.writeValueAsString(new com.visionbank.approval.web.dto.ActorCommandDto("checker-1", "TRANSFER_CHECKER"))));
+
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/approvals/ctrl-5/workflow-view"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentState", is("REJECTED")))
+                .andExpect(jsonPath("$.stages[?(@.id=='REJECTED')].status", is(List.of("FAILED"))))
+                .andExpect(jsonPath("$.stages[?(@.id=='APPROVED')].status", is(List.of("PENDING"))));
+    }
+
+    @Test
     void getReturnsCurrentStateAndReturns404WhenNotFound() throws Exception {
         mockMvc.perform(post("/approvals")
                 .header("Idempotency-Key", UUID.randomUUID().toString())

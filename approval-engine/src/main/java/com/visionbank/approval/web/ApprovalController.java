@@ -109,9 +109,10 @@ public class ApprovalController {
                 .orElseThrow(() -> new ApprovalRequestNotFoundException(id));
         WorkflowDefinition workflow = workflowRegistry.get(request.getWorkflowId());
         String currentState = request.getState();
+        List<AuditLog> auditLog = audits.findByRequestIdOrderByCreatedAtAsc(id);
 
         List<StageViewDto> stages = workflow.states().stream()
-                .map(s -> buildStageView(workflow, request, s, currentState))
+                .map(s -> buildStageView(workflow, request, s, currentState, auditLog))
                 .toList();
 
         return new WorkflowViewDto(workflow.name(), workflow.version(), currentState,
@@ -119,15 +120,16 @@ public class ApprovalController {
     }
 
     private StageViewDto buildStageView(WorkflowDefinition workflow, ApprovalRequest request,
-                                         WorkflowDefinition.StateDef stateDef, String currentState) {
+                                         WorkflowDefinition.StateDef stateDef, String currentState,
+                                         List<AuditLog> auditLog) {
         String id = stateDef.id();
         String status;
-        if (id.equals(currentState)) {
+        if (id.equals(currentState) && workflow.isTerminal(id)) {
+            status = isSuccessTerminal(workflow, id) ? "COMPLETED" : "FAILED";
+        } else if (id.equals(currentState)) {
             status = "IN_PROGRESS";
-        } else if (workflow.isTerminal(id)) {
-            status = id.equals(currentState) ? "IN_PROGRESS" : (hasEverReached(request, id) ? "COMPLETED" : "PENDING");
         } else {
-            status = hasEverReached(request, id) ? "COMPLETED" : "PENDING";
+            status = hasEverReached(auditLog, id) ? "COMPLETED" : "PENDING";
         }
 
         StagePolicy policy = request.getPolicySnapshot().stages().get(id);
@@ -135,7 +137,6 @@ public class ApprovalController {
             return new StageViewDto(id, stateDef.label(), status, null, null, List.of());
         }
 
-        List<AuditLog> stageAudits = audits.findByRequestIdOrderByCreatedAtAsc(request.getRequestId());
         List<DecisionViewDto> approvals = decisions.findByRequestIdAndState(request.getRequestId(), id).stream()
                 .map(d -> new DecisionViewDto(d.getActorId(), d.getActorRole(), d.getDecision().name(), d.getCreatedAt()))
                 .toList();
@@ -144,8 +145,12 @@ public class ApprovalController {
         return new StageViewDto(id, stateDef.label(), status, policy.requiredApprovals(), (int) completed, approvals);
     }
 
-    private boolean hasEverReached(ApprovalRequest request, String stateId) {
-        return audits.findByRequestIdOrderByCreatedAtAsc(request.getRequestId()).stream()
-                .anyMatch(a -> a.getNewState().equals(stateId) || a.getPreviousState().equals(stateId));
+    private boolean hasEverReached(List<AuditLog> auditLog, String stateId) {
+        return auditLog.stream().anyMatch(a -> a.getNewState().equals(stateId) || a.getPreviousState().equals(stateId));
+    }
+
+    private boolean isSuccessTerminal(WorkflowDefinition workflow, String state) {
+        return workflow.transitions().stream()
+                .anyMatch(t -> t.to().equals(state) && t.name().toLowerCase().contains("approve"));
     }
 }
