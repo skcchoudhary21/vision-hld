@@ -22,13 +22,6 @@ public record WorkflowDefinition(
                 .collect(Collectors.toList());
     }
 
-    public Transition byName(String name) {
-        return transitions.stream()
-                .filter(t -> t.name().equals(name))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("Unknown transition: " + name));
-    }
-
     public boolean isTerminal(String state) {
         return terminalStates.contains(state);
     }

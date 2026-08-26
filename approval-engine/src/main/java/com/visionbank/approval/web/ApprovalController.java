@@ -51,7 +51,7 @@ public class ApprovalController {
     }
 
     // No Idempotency-Key header on approve/reject/cancel — decisions are
-    // naturally idempotent per (request_id, actor_id) via Task 3's unique
+    // naturally idempotent per (request_id, actor_id, state) via Task 3's unique
     // constraint (spec §11). Only create() originates a request and needs
     // client-supplied replay protection.
 

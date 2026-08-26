@@ -22,7 +22,5 @@ spring:
     scheduling:
       pool:
         size: 2
-workflow:
-  definition-path: workflow/definitions/transfer-approval.yaml
 banking-service:
   webhook-url: http://localhost:8080/internal/events

@@ -18,12 +18,12 @@ public interface ApprovalDecisionRepository extends JpaRepository<ApprovalDecisi
     // request (PrivilegedAccessWorkflowTest.sameActorCannotDoubleCountWithinOneStageButCanActAtALaterStage).
     boolean existsByRequestIdAndActorIdAndState(String requestId, String actorId, String state);
 
-    // Request-wide: NOT a duplicate of the above (kept deliberately, still has a real call
-    // site -- see approve()'s eligibility-failure branch). A caller retrying approve() with
-    // the role that was valid when they first acted, after the request has since moved past
-    // their stage to one where that role no longer qualifies, must not get a hard 403 for a
-    // call that already succeeded once; some prior decision by this actor on this request
-    // (regardless of which state it was recorded under) is what tells approve() this is a
-    // stale-but-harmless replay rather than a genuinely ineligible actor.
-    boolean existsByRequestIdAndActorId(String requestId, String actorId);
+    // Request-wide, but scoped to the role the actor is retrying with: see approve()'s
+    // eligibility-failure branch. A caller retrying approve() with the role that was valid
+    // when they first acted, after the request has since moved past their stage to one
+    // where that role no longer qualifies, must not get a hard 403 for a call that already
+    // succeeded once. Requiring the role to match too (not just the actor id) means an
+    // actor who genuinely never decided under THIS role still gets a clear signal instead of
+    // a silent, misleading 200.
+    boolean existsByRequestIdAndActorIdAndActorRole(String requestId, String actorId, String actorRole);
 }

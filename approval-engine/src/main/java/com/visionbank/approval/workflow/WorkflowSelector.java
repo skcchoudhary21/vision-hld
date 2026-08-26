@@ -1,5 +1,6 @@
 package com.visionbank.approval.workflow;
 
+import com.visionbank.approval.service.InvalidRequestException;
 import org.springframework.core.io.ClassPathResource;
 import org.yaml.snakeyaml.Yaml;
 
@@ -23,7 +24,7 @@ public class WorkflowSelector {
     public WorkflowDefinition resolve(String requestType) {
         String workflowId = workflowIdByRequestType.get(requestType);
         if (workflowId == null) {
-            throw new IllegalStateException("No workflow selector configured for requestType: " + requestType);
+            throw new InvalidRequestException("No workflow selector configured for requestType: " + requestType);
         }
         return registry.get(workflowId);
     }

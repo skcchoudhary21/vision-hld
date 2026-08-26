@@ -1,5 +1,6 @@
 package com.visionbank.approval.workflow;
 
+import com.visionbank.approval.service.InvalidRequestException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,6 +29,6 @@ class WorkflowSelectorTest {
         WorkflowSelector selector = new WorkflowSelector("workflow/workflow-selection.yaml", registry);
 
         assertThatThrownBy(() -> selector.resolve("SOMETHING_ELSE"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(InvalidRequestException.class);
     }
 }

@@ -11,6 +11,10 @@ HLD/LLD: `docs/hld.md`, `docs/lld.md`.
 docker compose up --build
 ```
 
+If you have an existing local Postgres volume from before, run `docker
+compose down -v` first — this plan added new required columns and widened a
+unique constraint that `ddl-auto: update` can't safely apply to existing data.
+
 Banking Service: http://localhost:8080. Approval Engine: http://localhost:8081.
 
 Submit a transfer:
@@ -58,9 +62,11 @@ cd banking-service && ./gradlew test
 - A retry scheduler polling `RELEASE_PENDING` transfers for core-banking
   failures (the state exists; the poller doesn't, since the stub never fails).
 - Real authentication instead of trusting `actorId`/`actorRole` in request bodies.
-- A second tenant on the Approval Engine to actually prove the workflow
-  definition / policy snapshot / opaque envelope boundary generalizes,
-  rather than asserting it from one tenant.
+- The multi-workflow generalization (a second, differently-shaped workflow —
+  privileged-access — genuinely running through the same engine, no code
+  changes, just a new YAML file) is now built and verified end-to-end, not
+  just asserted from one tenant. See docs/hld.md and the design spec for how
+  it works.
 - Error handling and rollback in the docker-compose Postgres init script
   (`docker-compose-postgres-init/01-init.sql`) — currently if a statement
   fails partway through (e.g., creating the `approval` role/database fails

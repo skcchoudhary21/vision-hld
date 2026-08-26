@@ -30,8 +30,13 @@ class WorkflowLoaderTest {
     void approveTransitionGuardIsApprovalsSatisfied() {
         WorkflowDefinition def = new YamlWorkflowLoader().load("workflow/definitions/transfer-approval.yaml");
 
-        assertThat(def.byName("approve").guard()).isEqualTo("approvals_satisfied");
-        assertThat(def.byName("approve").to()).isEqualTo("APPROVED");
+        Transition approve = def.transitionsFrom("PENDING_APPROVAL").stream()
+                .filter(t -> t.name().equals("approve"))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(approve.guard()).isEqualTo("approvals_satisfied");
+        assertThat(approve.to()).isEqualTo("APPROVED");
     }
 
     @Test

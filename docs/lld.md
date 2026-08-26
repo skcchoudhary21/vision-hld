@@ -34,7 +34,7 @@ stateDiagram-v2
 each event applies only if Transfer is still in the expected state (a lost race is a logged
 no-op). No `RELEASE_FAILED`: a transient core-banking failure retries in place.
 
-## Workflow Definition (`approval-engine/src/main/resources/workflow/transfer-approval.yaml`)
+## Workflow Definition (`approval-engine/src/main/resources/workflow/definitions/transfer-approval.yaml`)
 
 ```yaml
 name: transfer-approval
@@ -85,8 +85,9 @@ in-flight request.
 // Request
 {
   "requestId": "transfer-abc123", "requestType": "TRANSFER_APPROVAL",
-  "makerId": "maker-1", "requiredApprovals": 2,
-  "eligibleRoles": ["TRANSFER_CHECKER"], "makerCanApprove": false,
+  "makerId": "maker-1",
+  "stagePolicies": { "PENDING_APPROVAL": { "requiredApprovals": 2, "eligibleRoles": ["TRANSFER_CHECKER"] } },
+  "makerCanApprove": false,
   "payloadJson": "{\"transferId\":\"abc123\",\"amount\":500000}",
   "expiresAt": "2026-08-26T10:00:00Z"
 }
@@ -95,7 +96,7 @@ in-flight request.
 ```
 
 **`POST /approvals/{id}/approve`** (no `Idempotency-Key` — idempotent per `(request_id,
-actor_id)`)
+actor_id, state)`)
 ```json
 // Request                         // 200 Response
 { "actorId": "checker-1",          { "requestId": "transfer-abc123",
@@ -128,9 +129,10 @@ endpoint, not client-facing.
 ```
 -- approval DB
 approval_request(request_id PK, request_type, state, version, maker_id,
-                  policy_snapshot jsonb, payload jsonb, created_at, expires_at)
-approval_decision(decision_id PK, request_id, actor_id, actor_role, decision,
-                   created_at, UNIQUE(request_id, actor_id))
+                  workflow_id, workflow_version, policy_snapshot jsonb, payload jsonb,
+                  created_at, expires_at)
+approval_decision(decision_id PK, request_id, actor_id, actor_role, state, decision,
+                   created_at, UNIQUE(request_id, actor_id, state))
 audit_log(audit_id PK, request_id, actor_id, actor_role, action,
           previous_state, new_state, created_at, metadata)
 idempotency_key(idem_key PK, command_type, request_id, request_hash, result jsonb, created_at)

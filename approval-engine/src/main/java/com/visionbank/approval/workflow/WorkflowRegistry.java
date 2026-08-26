@@ -4,6 +4,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,6 +23,10 @@ public class WorkflowRegistry {
             throw new IllegalStateException("No workflow definition loaded for id: " + workflowId);
         }
         return def;
+    }
+
+    public Collection<WorkflowDefinition> all() {
+        return byId.values();
     }
 
     // Used by ExpirySweeper (Task 5) to build its candidate query across every loaded

@@ -73,6 +73,17 @@ public class ApprovalCommandService {
 
         WorkflowDefinition resolvedWorkflow = workflowSelector.resolve(cmd.requestType());
 
+        java.util.Set<String> requiredStages = resolvedWorkflow.states().stream()
+                .map(WorkflowDefinition.StateDef::id)
+                .filter(id -> !id.equals(resolvedWorkflow.initialState()) && !resolvedWorkflow.isTerminal(id))
+                .collect(java.util.stream.Collectors.toSet());
+        java.util.Set<String> missingStages = new java.util.HashSet<>(requiredStages);
+        missingStages.removeAll(cmd.policy().stages().keySet());
+        if (!missingStages.isEmpty()) {
+            throw new InvalidRequestException("Missing stagePolicies for workflow " + resolvedWorkflow.name()
+                    + ", requestId " + cmd.requestId() + ": " + missingStages);
+        }
+
         ApprovalRequest request = new ApprovalRequest();
         request.setRequestId(cmd.requestId());
         request.setRequestType(cmd.requestType());
@@ -100,13 +111,13 @@ public class ApprovalCommandService {
                 .map(Transition::to)
                 .filter(s -> !resolvedWorkflow.isTerminal(s))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new InvalidRequestException(
                         "Workflow " + resolvedWorkflow.name() + " has no non-terminal transition from SUBMITTED"));
         GuardContext ctx = new GuardContext(cmd.makerId(), cmd.policy(), 0, null, null, false, gateState);
         Transition initial = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
                 .filter(t -> guards.get(t.guard()).evaluate(ctx))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("No transition from SUBMITTED satisfied by policy"));
+                .orElseThrow(() -> new InvalidRequestException("No transition from SUBMITTED satisfied by policy"));
 
         request.setState(initial.to());
         request.setVersion(1L);
@@ -161,7 +172,7 @@ public class ApprovalCommandService {
             // stage that role doesn't qualify for. Treat that specific case as a harmless
             // stale replay rather than a hard Forbidden; an actor with no decision anywhere on
             // this request is still genuinely rejected.
-            if (decisions.existsByRequestIdAndActorId(requestId, actorId)) {
+            if (decisions.existsByRequestIdAndActorIdAndActorRole(requestId, actorId, actorRole)) {
                 return toView(request);
             }
             throw new ForbiddenActionException("Actor role " + actorRole + " is not an eligible checker for " + requestId);

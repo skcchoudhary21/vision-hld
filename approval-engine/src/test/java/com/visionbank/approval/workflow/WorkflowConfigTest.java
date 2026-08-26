@@ -11,7 +11,7 @@ class WorkflowConfigTest {
         WorkflowConfig config = new WorkflowConfig();
         GuardRegistry emptyRegistry = new GuardRegistry(); // no guards registered
 
-        assertThatThrownBy(() -> config.workflowDefinition("workflow/definitions/transfer-approval.yaml", emptyRegistry))
+        assertThatThrownBy(() -> config.workflowRegistry(emptyRegistry))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("No guard registered");
     }
