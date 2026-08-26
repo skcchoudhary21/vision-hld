@@ -93,4 +93,17 @@ public class ApprovalEngineClient {
         return restClient.get().uri("/workflows/{id}/{version}", workflowId, version)
                 .retrieve().body(WorkflowDefinitionDto.class);
     }
+
+    // Generic pass-through create, used by the UI's "create any request" form (e.g.
+    // privileged-access, which has no banking-service-native creation path the way
+    // transfers do via /transfers) -- forwards the caller-built body verbatim to
+    // approval-engine's own POST /approvals contract.
+    public WorkflowResponse createApproval(Map<String, Object> body, String idempotencyKey) {
+        return restClient.post()
+                .uri("/approvals")
+                .header("Idempotency-Key", idempotencyKey)
+                .body(body)
+                .retrieve()
+                .body(WorkflowResponse.class);
+    }
 }

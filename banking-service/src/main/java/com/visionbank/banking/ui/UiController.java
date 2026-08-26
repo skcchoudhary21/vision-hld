@@ -1,6 +1,7 @@
 package com.visionbank.banking.ui;
 
 import com.visionbank.banking.approval.ApprovalEngineClient;
+import com.visionbank.banking.approval.WorkflowResponse;
 import com.visionbank.banking.domain.Transfer;
 import com.visionbank.banking.repository.TransferRepository;
 import org.springframework.web.bind.annotation.*;
@@ -9,7 +10,9 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 // Dev-tool support for the manual test UI (static/ui.html): proxies approval
 // decisions and reads through to approval-engine so the browser only ever
@@ -59,6 +62,14 @@ public class UiController {
     @GetMapping("/workflows/{id}/{version}")
     public WorkflowDefinitionDto getWorkflow(@PathVariable String id, @PathVariable int version) {
         return approvalEngineClient.getWorkflowDefinition(id, version);
+    }
+
+    // Generic create, for workflows with no banking-service-native creation path
+    // (e.g. privileged-access) -- the UI builds the full body itself; a fresh
+    // server-generated idempotency key means one click always means one request.
+    @PostMapping("/approvals")
+    public WorkflowResponse createApproval(@RequestBody Map<String, Object> body) {
+        return approvalEngineClient.createApproval(body, UUID.randomUUID().toString());
     }
 
     @PostMapping("/approvals/{id}/{action}")

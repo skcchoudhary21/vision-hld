@@ -15,11 +15,11 @@
   #nav button:hover { color: #fff; }
   #nav button.active { color: #fff; border-bottom-color: #2563eb; }
 
-  #form-panel { background: #fff; border-bottom: 1px solid #ddd; padding: 14px 20px; display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
-  #form-panel .field { display: flex; flex-direction: column; font-size: 11px; color: #555; }
-  #form-panel input { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; width: 140px; }
-  #form-panel button { padding: 7px 14px; font-size: 13px; border: none; border-radius: 3px; cursor: pointer; background: #2563eb; color: #fff; }
-  #form-panel button:hover { background: #1d4ed8; }
+  #form-panel, .form-panel-like { background: #fff; border-bottom: 1px solid #ddd; padding: 14px 20px; display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  #form-panel .field, .form-panel-like .field { display: flex; flex-direction: column; font-size: 11px; color: #555; }
+  #form-panel input, .form-panel-like input, .form-panel-like select { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 3px; width: 140px; }
+  #form-panel button, .form-panel-like button { padding: 7px 14px; font-size: 13px; border: none; border-radius: 3px; cursor: pointer; background: #2563eb; color: #fff; }
+  #form-panel button:hover, .form-panel-like button:hover { background: #1d4ed8; }
   #form-panel .divider { width: 1px; background: #ddd; align-self: stretch; margin: 0 6px; }
 
   #main { display: flex; height: calc(100vh - 165px); }
@@ -117,6 +117,18 @@
     <div class="divider"></div>
     <div class="field"><label>load existing transferId</label><input id="f-load"></div>
     <button onclick="loadTransfer()">Watch</button>
+  </div>
+
+  <div id="privileged-panel" class="form-panel-like" style="border-top:1px dashed #ddd">
+    <div class="field"><label>makerId</label><input id="p-maker" value="maker-1"></div>
+    <div class="field"><label>resource</label><input id="p-resource" value="prod-db"></div>
+    <div class="field"><label>access level</label>
+      <select id="p-level" style="padding:6px 8px;font-size:13px;border:1px solid #ccc;border-radius:3px;width:180px">
+        <option value="standard">Standard (1 security approval)</option>
+        <option value="critical">Critical (2 security approvals)</option>
+      </select>
+    </div>
+    <button onclick="submitPrivileged()">Request Privileged Access</button>
   </div>
 
   <div id="main">
@@ -251,6 +263,42 @@ async function submitTransfer() {
   }
 }
 
+// Mirrors PolicyResolver's own pattern for transfers (amount -> workflow, never
+// exposed to the caller as a raw workflowId/version choice): the operator picks
+// a domain-meaningful "access level", and this resolves it to the matching
+// workflow version -- same shape as amount-tier -> transfer-* resolution, just
+// client-side since privileged-access has no banking-service-native creation
+// path (no domain policy service backs it the way PolicyResolver backs transfers).
+function resolvePrivilegedWorkflow(level) {
+  return level === 'critical' ? { workflowId: 'privileged-access', workflowVersion: 2 }
+                               : { workflowId: 'privileged-access', workflowVersion: 1 };
+}
+
+async function submitPrivileged() {
+  const { workflowId, workflowVersion } = resolvePrivilegedWorkflow(val('p-level'));
+  const requestId = crypto.randomUUID();
+  const body = {
+    requestId, requestType: 'PRIVILEGED_ACCESS', makerId: val('p-maker'),
+    workflowId, workflowVersion: parseInt(workflowVersion, 10), policyVersion: 'v1',
+    payloadJson: JSON.stringify({ resource: val('p-resource') }),
+    expiresAt: new Date(Date.now() + 86400000).toISOString()
+  };
+  try {
+    const res = await fetch('/ui-api/approvals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const result = await res.json();
+    if (!res.ok) { alert('Failed: ' + JSON.stringify(result)); return; }
+    currentDetailRequestId = result.requestId;
+    showTab('request-detail');
+    loadRequestDetailTab(result.requestId);
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
 function loadTransfer() {
   resetPipeline();
   const id = val('f-load');
@@ -357,6 +405,17 @@ function elFrom(html) {
   return div.firstChild;
 }
 
+// tr/td can't be parsed via a <div>'s innerHTML -- browsers apply table
+// foster-parenting rules outside a real <table> context and silently drop the
+// row/cell structure, collapsing everything into one text blob. Build the
+// <tr> itself first, then set its innerHTML to just the <td> cells.
+function trFrom(cellsHtml) {
+  const tr = document.createElement('tr');
+  tr.className = 'row-link';
+  tr.innerHTML = cellsHtml;
+  return tr;
+}
+
 // ---- All Requests tab ----
 
 async function loadRequestsTab(status) {
@@ -370,9 +429,9 @@ async function loadRequestsTab(status) {
   const body = document.getElementById('requests-body');
   body.innerHTML = '';
   rows.forEach(r => {
-    const tr = elFrom('<tr class="row-link"><td>' + r.requestId + '</td><td>' + r.workflowId + ':' + r.workflowVersion + '</td><td>' +
+    const tr = trFrom('<td>' + r.requestId + '</td><td>' + r.workflowId + ':' + r.workflowVersion + '</td><td>' +
       r.currentStageLabel + '</td><td>' + (r.requiredApprovals != null ? r.currentApprovals + ' / ' + r.requiredApprovals : '—') +
-      '</td><td>' + (r.terminal ? r.currentState : 'PENDING') + '</td></tr>');
+      '</td><td>' + (r.terminal ? r.currentState : 'PENDING') + '</td>');
     tr.onclick = () => { currentDetailRequestId = r.requestId; showTab('request-detail'); loadRequestDetailTab(r.requestId); };
     body.appendChild(tr);
   });
@@ -456,7 +515,7 @@ async function loadWorkflowsTab() {
   const body = document.getElementById('workflows-body');
   body.innerHTML = '';
   rows.forEach(w => {
-    const tr = elFrom('<tr class="row-link"><td>' + w.workflowId + '</td><td>' + w.version + '</td><td>' + w.stateCount + '</td></tr>');
+    const tr = trFrom('<td>' + w.workflowId + '</td><td>' + w.version + '</td><td>' + w.stateCount + '</td>');
     tr.onclick = () => { showTab('workflow-detail'); loadWorkflowDetailTab(w.workflowId, w.version); };
     body.appendChild(tr);
   });
