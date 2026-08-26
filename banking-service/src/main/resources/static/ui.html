@@ -79,12 +79,10 @@
 
 <div id="main">
   <div id="left">
-    <div class="pipeline" id="pipeline">
-      <div class="stage pending" data-stage="submit"><span class="label">1. Submit &amp; Validate</span><span class="badge">pending</span></div>
-      <div class="stage pending" data-stage="create"><span class="label">2. Create Approval Request</span><span class="badge">pending</span></div>
-      <div class="stage pending" data-stage="await"><span class="label">3. Awaiting Approval</span><span class="badge">pending</span></div>
-      <div class="stage pending" data-stage="decision"><span class="label">4. Decision</span><span class="badge">pending</span></div>
-      <div class="stage pending" data-stage="release"><span class="label">5. Release</span><span class="badge">pending</span></div>
+    <div class="pipeline" id="pipeline"></div>
+
+    <div class="pipeline">
+      <div class="stage pending" data-stage="release"><span class="label">Transfer Execution: Release</span><span class="badge">pending</span></div>
     </div>
 
     <div id="decision-panel">
@@ -128,15 +126,45 @@ function setStage(name, status) {
 }
 
 function resetPipeline() {
-  ['submit','create','await','decision','release'].forEach(s => setStage(s, 'pending'));
+  document.getElementById('pipeline').innerHTML = '';
+  setStage('release', 'pending');
   document.getElementById('decision-panel').classList.remove('show');
   document.getElementById('console').innerHTML = '';
   document.getElementById('timeline').innerHTML = '<div class="empty">Waiting for events...</div>';
 }
 
+// Renders the Approval Engine's own stages -- whatever shape a workflow's
+// real workflow-view response contains, driven entirely by the payload with
+// no hardcoded stage names, labels, or count. The Transfer Execution stage
+// (release, below) is a banking-service-only concept that never appears in
+// view.stages (that endpoint only ever returns the Approval Engine's own
+// stages), so it stays a separate static block driven by the 'state' event.
+function renderPipeline(view) {
+  const el = document.getElementById('pipeline');
+  el.innerHTML = '';
+  view.stages.forEach(stage => {
+    const div = document.createElement('div');
+    const cssStatus = stage.status.toLowerCase().replace('_', '-');
+    div.className = 'stage ' + (cssStatus === 'in-progress' ? 'active' : cssStatus === 'completed' ? 'success' : cssStatus === 'failed' ? 'failed' : 'pending');
+    let extra = '';
+    if (stage.requiredApprovals != null) {
+      extra = '<div style="font-size:11px;color:#666;margin-top:4px">' +
+        stage.completedApprovals + ' / ' + stage.requiredApprovals + ' approvals' +
+        (stage.approvals.length ? ': ' + stage.approvals.map(a => a.actorId).join(', ') : '') + '</div>';
+    }
+    div.innerHTML = '<div><span class="label">' + stage.label + '</span>' + extra + '</div>' +
+      '<span class="badge">' + stage.status.toLowerCase() + '</span>';
+    el.appendChild(div);
+  });
+  if (view.currentState && !view.terminalStates.includes(view.currentState)) {
+    document.getElementById('decision-panel').classList.add('show');
+  } else {
+    document.getElementById('decision-panel').classList.remove('show');
+  }
+}
+
 async function submitTransfer() {
   resetPipeline();
-  setStage('submit', 'active');
   log('[' + new Date().toISOString() + '] POST /transfers', 'action');
   try {
     const res = await fetch('/transfers', {
@@ -148,16 +176,13 @@ async function submitTransfer() {
       })
     });
     const body = await res.json();
-    if (!res.ok) { log('FAILED: ' + JSON.stringify(body), 'action'); setStage('submit', 'failed'); return; }
+    if (!res.ok) { log('FAILED: ' + JSON.stringify(body), 'action'); return; }
     log('-> ' + JSON.stringify(body), 'info');
-    setStage('submit', 'success');
-    setStage('create', 'success');
     currentTransferId = body.transferId;
     document.getElementById('f-load').value = currentTransferId;
     watch(currentTransferId);
   } catch (e) {
     log('ERROR: ' + e, 'action');
-    setStage('submit', 'failed');
   }
 }
 
@@ -166,8 +191,6 @@ function loadTransfer() {
   const id = val('f-load');
   if (!id) return;
   currentTransferId = id;
-  setStage('submit', 'success');
-  setStage('create', 'success');
   watch(id);
 }
 
@@ -178,7 +201,14 @@ function watch(transferId) {
 
   es.addEventListener('state', e => {
     const s = JSON.parse(e.data);
-    applyState(s);
+    if (s.transferState === 'RELEASE_PENDING') setStage('release', 'active');
+    if (s.transferState === 'RELEASED') setStage('release', 'success');
+    if (['REJECTED','CANCELLED','EXPIRED'].includes(s.transferState)) setStage('release', 'failed');
+  });
+
+  es.addEventListener('workflow-view', e => {
+    const view = JSON.parse(e.data);
+    renderPipeline(view);
   });
 
   es.addEventListener('audit', e => {
@@ -198,30 +228,6 @@ function watch(transferId) {
   });
 
   es.onerror = () => { log('stream closed', 'info'); };
-}
-
-function applyState(s) {
-  if (s.approvalState) currentApprovalId = currentTransferId; // requestId == transferId
-
-  if (!s.approvalState || s.approvalState === 'SUBMITTED') {
-    setStage('create', 'active');
-  } else if (s.approvalState === 'PENDING_APPROVAL') {
-    setStage('create', 'success');
-    setStage('await', 'active');
-    document.getElementById('decision-panel').classList.add('show');
-  } else if (s.approvalState === 'APPROVED') {
-    setStage('await', 'success');
-    setStage('decision', 'success');
-    document.getElementById('decision-panel').classList.remove('show');
-  } else if (['REJECTED','CANCELLED','EXPIRED'].includes(s.approvalState)) {
-    setStage('await', s.approvalState === 'EXPIRED' ? 'failed' : 'success');
-    setStage('decision', 'failed');
-    document.getElementById('decision-panel').classList.remove('show');
-  }
-
-  if (s.transferState === 'RELEASE_PENDING') setStage('release', 'active');
-  if (s.transferState === 'RELEASED') setStage('release', 'success');
-  if (['REJECTED','CANCELLED','EXPIRED'].includes(s.transferState)) setStage('release', 'failed');
 }
 
 function appendTimeline(a) {

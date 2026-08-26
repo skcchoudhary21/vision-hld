@@ -41,6 +41,11 @@ public class UiController {
         return approvalEngineClient.getAuditLog(id);
     }
 
+    @GetMapping("/approvals/{id}/workflow-view")
+    public WorkflowViewDto getWorkflowView(@PathVariable String id) {
+        return approvalEngineClient.getWorkflowView(id);
+    }
+
     @PostMapping("/approvals/{id}/{action}")
     public ApprovalStateDto decide(@PathVariable String id, @PathVariable String action,
                                     @RequestBody ActorRequest body) {
@@ -65,6 +70,7 @@ public class UiController {
     private void pollAndStream(String transferId, SseEmitter emitter) {
         String lastTransferState = null;
         String lastApprovalState = null;
+        String lastWorkflowViewSignature = null;
         int auditEntriesSent = 0;
         Instant deadline = Instant.now().plus(STREAM_TIMEOUT);
 
@@ -99,6 +105,18 @@ public class UiController {
                     lastApprovalState = approvalState;
                 }
 
+                WorkflowViewDto view = transfer.getApprovalRequestId() != null
+                        ? safeGetWorkflowView(transfer.getApprovalRequestId())
+                        : null;
+                if (view != null) {
+                    String signature = view.currentState() + view.stages().stream()
+                            .map(s -> s.id() + ":" + s.completedApprovals()).collect(java.util.stream.Collectors.joining(","));
+                    if (!signature.equals(lastWorkflowViewSignature)) {
+                        emitter.send(SseEmitter.event().name("workflow-view").data(view));
+                        lastWorkflowViewSignature = signature;
+                    }
+                }
+
                 if (TERMINAL_STATES.contains(transferState)) {
                     emitter.send(SseEmitter.event().name("done").data(transferState));
                     emitter.complete();
@@ -119,6 +137,14 @@ public class UiController {
     private ApprovalStateDto safeGetApproval(String approvalRequestId) {
         try {
             return approvalEngineClient.getApproval(approvalRequestId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private WorkflowViewDto safeGetWorkflowView(String approvalRequestId) {
+        try {
+            return approvalEngineClient.getWorkflowView(approvalRequestId);
         } catch (Exception e) {
             return null;
         }

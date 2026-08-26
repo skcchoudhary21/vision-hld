@@ -2,6 +2,7 @@ package com.visionbank.banking.approval;
 
 import com.visionbank.banking.ui.ApprovalStateDto;
 import com.visionbank.banking.ui.AuditEntryDto;
+import com.visionbank.banking.ui.WorkflowViewDto;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -76,5 +77,9 @@ public class ApprovalEngineClient {
         Map<String, Object> body = Map.of("actorId", actorId, "actorRole", actorRole);
         return restClient.post().uri("/approvals/{id}/{action}", id, action)
                 .body(body).retrieve().body(ApprovalStateDto.class);
+    }
+
+    public WorkflowViewDto getWorkflowView(String id) {
+        return restClient.get().uri("/approvals/{id}/workflow-view", id).retrieve().body(WorkflowViewDto.class);
     }
 }
