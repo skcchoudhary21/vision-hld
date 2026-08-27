@@ -1,18 +1,13 @@
 package com.visionbank.approval.service;
 
 import com.visionbank.approval.domain.OutboxEvent;
+import com.visionbank.approval.messaging.ApprovalEvent;
+import com.visionbank.approval.messaging.LifecycleEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatusCode;
-import org.springframework.http.MediaType;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
 
-import java.net.http.HttpClient;
-import java.time.Duration;
 import java.util.List;
 
 @Service
@@ -21,19 +16,11 @@ public class OutboxRelay {
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
 
     private final OutboxClaimService claimService;
-    private final RestClient restClient;
-    private final String webhookUrl;
+    private final LifecycleEventPublisher publisher;
 
-    public OutboxRelay(OutboxClaimService claimService,
-                        @Value("${banking-service.webhook-url}") String webhookUrl) {
+    public OutboxRelay(OutboxClaimService claimService, LifecycleEventPublisher publisher) {
         this.claimService = claimService;
-        this.webhookUrl = webhookUrl;
-        HttpClient httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
-                .build();
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
-        factory.setReadTimeout(Duration.ofSeconds(5));
-        this.restClient = RestClient.builder().requestFactory(factory).build();
+        this.publisher = publisher;
     }
 
     @Scheduled(fixedDelay = 2000)
@@ -54,16 +41,8 @@ public class OutboxRelay {
 
     private boolean publish(OutboxEvent event) {
         try {
-            HttpStatusCode status = restClient.post()
-                    .uri(webhookUrl)
-                    .header("X-Event-Id", event.getEventId())
-                    .header("X-Event-Type", event.getEventType())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(event.getPayload())
-                    .retrieve()
-                    .toBodilessEntity()
-                    .getStatusCode();
-            return status.is2xxSuccessful();
+            publisher.publish(new ApprovalEvent(event.getEventId(), event.getEventType(), event.getRequestId(), event.getPayload()));
+            return true;
         } catch (Exception e) {
             log.warn("Failed to relay event {} ({}): {}", event.getEventId(), event.getEventType(), e.getMessage());
             return false;
