@@ -1,6 +1,8 @@
 package com.visionbank.banking.service;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.visionbank.banking.corebanking.CoreBankingClient;
+import com.visionbank.banking.corebanking.ValidationResult;
 import com.visionbank.banking.domain.Transfer;
 import com.visionbank.banking.domain.TransferState;
 import com.visionbank.banking.repository.TransferRepository;
@@ -11,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -22,6 +25,10 @@ import java.util.concurrent.*;
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 @Testcontainers
 @SpringBootTest
@@ -43,6 +50,7 @@ class TransferSubmissionServiceTest {
     @Autowired TransferSubmissionService service;
     @Autowired TransferPersistenceService persistenceService;
     @Autowired TransferRepository transfers;
+    @MockitoBean CoreBankingClient coreBanking;
 
     @BeforeEach
     void startStub() {
@@ -52,6 +60,10 @@ class TransferSubmissionServiceTest {
         // rather than computing it locally.
         engineStub.stubFor(get(urlPathEqualTo("/policy-rules/resolve"))
                 .willReturn(okJson("{\"workflowId\":\"transfer-auto-release\",\"workflowVersion\":1}")));
+
+        // Default mock behavior: always allow validation for non-concurrent tests
+        when(coreBanking.validate(anyString(), anyLong(), anyString()))
+                .thenReturn(new ValidationResult(true, true, false));
     }
 
     @AfterEach
@@ -86,6 +98,13 @@ class TransferSubmissionServiceTest {
 
     @Test
     void insufficientBalanceFailsValidationBeforeCallingEngine() {
+        // For this test, mock should reject huge amounts (insufficient balance)
+        when(coreBanking.validate(anyString(), anyLong(), anyString()))
+                .thenAnswer(inv -> {
+                    long amount = inv.getArgument(1);
+                    return new ValidationResult(amount <= 100_000_00L, amount <= 500_000_00L, false);
+                });
+
         SubmitTransferCommand huge = new SubmitTransferCommand("maker-1", "ACC-FUNDED", "ACC-DEST", 999_999_999_00L, "AED");
 
         assertThatThrownBy(() -> service.submit(huge, UUID.randomUUID().toString()))
@@ -129,6 +148,48 @@ class TransferSubmissionServiceTest {
 
     @Test
     void concurrentSubmitWithSameIdempotencyKeyNeverThrowsRawConstraintViolation() throws Exception {
+        // Configure mock to simulate StubCoreBankingClient's duplicate tracking:
+        // first validation call gets duplicate=false, second gets duplicate=true.
+        // This exercises the validation-level race retry logic.
+        when(coreBanking.validate(anyString(), anyLong(), anyString()))
+                .thenReturn(new ValidationResult(true, true, false))     // Thread A: duplicate=false
+                .thenReturn(new ValidationResult(true, true, true));     // Thread B: duplicate=true
+
+        engineStub.stubFor(post(urlEqualTo("/approvals"))
+                .willReturn(okJson("{\"requestId\":\"whatever\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
+        String key = UUID.randomUUID().toString();
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Callable<Object> attempt = () -> {
+            startGate.await();
+            try {
+                return service.submit(smallTransfer(), key);
+            } catch (Exception e) {
+                return e;
+            }
+        };
+        Future<Object> a = pool.submit(attempt);
+        Future<Object> b = pool.submit(attempt);
+        startGate.countDown();
+
+        Object resultA = a.get(10, TimeUnit.SECONDS);
+        Object resultB = b.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        assertThat(resultA).isInstanceOf(TransferView.class);
+        assertThat(resultB).isInstanceOf(TransferView.class);
+        assertThat(((TransferView) resultA).transferId()).isEqualTo(((TransferView) resultB).transferId());
+    }
+
+    @Test
+    void concurrentSubmitPastValidationHitsDbConstraintButBothThreadsSucceed() throws Exception {
+        // Mock CoreBankingClient already returns duplicate=false from @BeforeEach setup,
+        // so both concurrent threads bypass validation and reach persistCreated(),
+        // forcing a real DB constraint race at the unique idempotency_key column.
+        // The fix should catch DataIntegrityViolationException and replay, returning
+        // the same transferId from both threads.
+
         engineStub.stubFor(post(urlEqualTo("/approvals"))
                 .willReturn(okJson("{\"requestId\":\"whatever\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
         String key = UUID.randomUUID().toString();

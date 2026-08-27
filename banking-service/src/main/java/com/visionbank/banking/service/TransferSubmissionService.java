@@ -23,6 +23,9 @@ import java.util.UUID;
 @Service
 public class TransferSubmissionService {
 
+    private static final int MAX_DUPLICATE_RETRIES = 10;
+    private static final int DUPLICATE_RETRY_DELAY_MS = 10;
+
     private final TransferRepository transfers;
     private final CoreBankingClient coreBanking;
     private final PolicyResolver policyResolver;
@@ -59,7 +62,7 @@ public class TransferSubmissionService {
             // Retry re-reading the database a few times with small delays to wait for the
             // concurrent call to complete its insert.
             if (validation.duplicate()) {
-                for (int retry = 0; retry < 10; retry++) {
+                for (int retry = 0; retry < MAX_DUPLICATE_RETRIES; retry++) {
                     Optional<Transfer> raceWinner = transfers.findByIdempotencyKey(idempotencyKey);
                     if (raceWinner.isPresent()) {
                         Transfer t = raceWinner.get();
@@ -69,7 +72,7 @@ public class TransferSubmissionService {
                         return completeWorkflowCreation(t, cmd);
                     }
                     try {
-                        Thread.sleep(10);
+                        Thread.sleep(DUPLICATE_RETRY_DELAY_MS);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
