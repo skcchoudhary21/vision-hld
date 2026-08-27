@@ -24,19 +24,24 @@ Definitions below).
 ```mermaid
 stateDiagram-v2
     [*] --> CREATED
-    CREATED --> VALIDATED
-    VALIDATED --> REJECTED: validation failure
-    VALIDATED --> WAITING_FOR_APPROVAL
-    WAITING_FOR_APPROVAL --> RELEASE_PENDING: ApprovalApproved
-    WAITING_FOR_APPROVAL --> REJECTED: ApprovalRejected
-    WAITING_FOR_APPROVAL --> CANCELLED: ApprovalCancelled
-    WAITING_FOR_APPROVAL --> EXPIRED: ApprovalExpired
+    CREATED --> PENDING_APPROVAL: ApprovalSubmitted (workflow created)
+    CREATED --> FAILED: ApprovalCreationFailed (SubmissionCommandReconciler gave up)
+    FAILED --> PENDING_APPROVAL: resumed submission links a newly-created workflow
+    PENDING_APPROVAL --> RELEASE_PENDING: ApprovalApproved
+    PENDING_APPROVAL --> REJECTED: ApprovalRejected
+    PENDING_APPROVAL --> CANCELLED: ApprovalCancelled
+    PENDING_APPROVAL --> EXPIRED: ApprovalExpired
     RELEASE_PENDING --> RELEASED: core banking confirms
 ```
 
-`WAITING_FOR_APPROVAL` mirrors the engine's `PENDING_APPROVAL` but is not shared state —
+`PENDING_APPROVAL` mirrors the engine's own `PENDING_APPROVAL` but is not shared state --
 each event applies only if Transfer is still in the expected state (a lost race is a logged
-no-op). No `RELEASE_FAILED`: a transient core-banking failure retries in place.
+no-op). `CREATED` is the brief async window between `POST /transfers` returning and its
+creation command being consumed off `stream:transfer-approval-create` (see Redis Stream
+Delivery below). `FAILED` is not necessarily terminal: resuming with the same
+`Idempotency-Key` (`TransferSubmissionService.resumeIfNeeded`) republishes the creation
+command, and `ApprovalEventListener` links the resulting workflow exactly as it would from
+`CREATED`. No `RELEASE_FAILED`: a transient core-banking failure retries in place.
 
 ## Workflow Definitions (one fixed-shape YAML per tier, not guard-branching in one workflow)
 
@@ -66,10 +71,14 @@ workflowVersion}` (404 `POLICY_RULE_NOT_FOUND` if none covers it). Seeded once f
 `application.yml`'s ceiling values (AED 5,000 / 50,000 minor units) into the three transfer
 tiers; editable afterward via `PUT /policy-rules`, no redeploy.
 
-Banking's `PolicyResolver` only resolves *which workflow* — required-approvals count and
-eligible role aren't a separate policy object on the wire; they're the resolved workflow's own
-`approve` transition (`requiredApprovals`, `allowedRoles`), frozen into `policy_snapshot`
-(embeds the full `WorkflowDefinition`) at creation and never re-resolved.
+Policy resolution now happens in-process inside Approval Engine's `SubmissionCommandConsumer`
+(via `PolicyRuleResolutionService`) when it consumes the creation command off
+`stream:transfer-approval-create` — not a synchronous call out of Banking Service. Banking's
+`PolicyResolver`/`ApprovalEngineClient.resolvePolicy()` classes still exist in source but have
+zero callers (dead code, left in place). Required-approvals count and eligible role aren't a
+separate policy object on the wire; they're the resolved workflow's own `approve` transition
+(`requiredApprovals`, `allowedRoles`), frozen into `policy_snapshot` (embeds the full
+`WorkflowDefinition`) at creation and never re-resolved.
 
 ## API Contracts
 
@@ -114,17 +123,18 @@ actor_id, state)`)
 | `NOT_FOUND` / `WORKFLOW_NOT_FOUND` / `POLICY_RULE_NOT_FOUND` | 404 | Unknown request / workflow / no policy rule covers the amount |
 | `INVALID_REQUEST` | 400 | e.g. `mine=true` without `X-Actor-Role` |
 
-**`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call.
+**`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call;
+submission itself is asynchronous (see Redis Stream Delivery below), so the response reflects
+only that the row was created, not that a workflow exists yet.
 ```json
 // Request
 { "makerId": "maker-1", "fromAccount": "ACC-1", "toAccount": "ACC-2",
   "amountMinorUnits": 500000, "currency": "USD" }
 // 200 Response
-{ "transferId": "abc123", "state": "WAITING_FOR_APPROVAL" }
+{ "transferId": "abc123", "state": "CREATED" }
 ```
-`GET /transfers/{id}` returns `TransferResponseDto`. Internal webhook `POST /internal/events`
-(`X-Event-Id`, `X-Event-Type` headers; body `{"requestId": "..."}`) is the relay's delivery
-endpoint, not client-facing.
+`GET /transfers/{id}` returns `TransferResponseDto`; poll it to observe `state` progress past
+`CREATED` once the creation command is consumed off `stream:transfer-approval-create`.
 
 ## Data Model
 
@@ -157,16 +167,22 @@ processed_event(event_id PK, processed_at)
 ```mermaid
 sequenceDiagram
     participant T as Banking Service
+    participant Rd1 as stream:transfer-approval-create
     participant E as Approval Engine
     participant R as Outbox Relay
-    T->>E: GET /policy-rules/resolve?amountMinorUnits=... -> transfer-auto-release:1
-    T->>E: POST /approvals (Idempotency-Key, workflowId=transfer-auto-release)
-    E->>E: only transition from SUBMITTED is unconditional -> APPROVED
+    participant Rd2 as stream:approval-lifecycle-events
+    T->>T: persistCreated() -> CREATED, returns immediately
+    T->>Rd1: XADD (transferId, makerId, amount, expiresAt)
+    Rd1->>E: XREADGROUP (SubmissionCommandConsumer)
+    E->>E: resolve(amount) -> transfer-auto-release:1 (in-process, PolicyRuleResolutionService)
+    E->>E: ApprovalCommandService.create(): only transition from SUBMITTED is unconditional -> APPROVED
     E->>E: commit: state + audit + outbox(ApprovalSubmitted, ApprovalApproved)
-    E-->>T: 200 { state: APPROVED }
+    E->>Rd1: XACK
     R->>E: poll: claim unpublished (FOR UPDATE SKIP LOCKED)
-    R->>T: POST /internal/events (ApprovalApproved)
-    T->>T: dedupe by event_id, release() -> RELEASE_PENDING -> RELEASED
+    R->>Rd2: XADD (ApprovalSubmitted), XADD (ApprovalApproved)
+    Rd2->>T: XREADGROUP (LifecycleEventConsumer)
+    T->>T: dedupe by event_id, ApprovalEventListener.handle():\nlink CREATED->PENDING_APPROVAL, then release() -> RELEASE_PENDING -> RELEASED
+    T->>Rd2: XACK
 ```
 
 **Multi-approver — the race diagram** (Checker A, Checker B approve concurrently, `required=1`;

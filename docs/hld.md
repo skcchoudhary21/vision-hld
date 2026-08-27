@@ -5,8 +5,9 @@
 Two independently deployable services, hard ownership split: **Banking Service owns what a
 transfer means** (validation, release orchestration); **Approval Engine owns how an approval
 progresses** (workflow catalog, policy rules, state, concurrency, audit, expiry). Neither writes
-the other's database — they coordinate over sync REST commands and an async outbox for
-lifecycle events.
+the other's database — they coordinate asynchronously over two Redis Streams (submission and
+lifecycle events), plus a synchronous `/ui-api` read-proxy and a synchronous core-banking
+release call.
 
 ## Context / Deployment
 
@@ -68,15 +69,15 @@ truth, in the service that already owns the workflow catalog those rules route t
 
 **Consistency:** strong/transactional within each service; **eventually consistent across the
 boundary** — no distributed transaction, outbox is the seam that makes partial failure safe.
-Resilience is asymmetric by design: Engine down breaks `submit()` synchronously (blocking call
-on the critical path); Banking down does **not** break approve/reject/cancel — the engine's
-state machine never depends on Banking's reachability, only async delivery does.
-
-**Updated:** Engine being down no longer breaks `submit()` synchronously — that was true when
-submission was a blocking HTTP call; it no longer is. A transfer now always reaches `CREATED`
-immediately, and the workflow-creation step retries against Redis until Engine comes back,
-giving up only after `SubmissionCommandReconciler`'s delivery-attempt ceiling (§ see LLD),
-at which point the transfer moves to `FAILED` and the maker is notified.
+Resilience is now symmetric in both directions, since both submission and lifecycle
+notification go through Redis Streams: Engine being down does not break `submit()` — a
+transfer always reaches `CREATED` immediately, and the workflow-creation command retries
+against Redis until Engine comes back, giving up only after `SubmissionCommandReconciler`'s
+delivery-attempt ceiling (see LLD's Redis Stream Delivery section), at which point the
+transfer moves to `FAILED` (itself resumable — see LLD's Transfer Release Lifecycle) and the
+maker is notified. Banking being down likewise does not break approve/reject/cancel — the
+engine's state machine never depends on Banking's reachability, only lifecycle-event delivery
+does, and that too persists in Redis until Banking comes back.
 
 ## NFRs
 
