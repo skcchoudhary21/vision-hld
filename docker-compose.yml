@@ -13,6 +13,18 @@ services:
       timeout: 3s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   approval-engine:
     build: ./approval-engine
     ports: ["8081:8081"]
@@ -21,8 +33,12 @@ services:
       SPRING_DATASOURCE_USERNAME: approval
       SPRING_DATASOURCE_PASSWORD: approval
       BANKING-SERVICE_WEBHOOK-URL: http://banking-service:8080/internal/events
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   banking-service:
@@ -34,8 +50,12 @@ services:
       SPRING_DATASOURCE_PASSWORD: banking
       APPROVAL-ENGINE_BASE-URL: http://approval-engine:8081
       UI_ALLOWED-ORIGIN: http://localhost:3000
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       approval-engine:
         condition: service_started
@@ -52,3 +72,6 @@ services:
     depends_on:
       banking-service:
         condition: service_started
+
+volumes:
+  redis-data:
