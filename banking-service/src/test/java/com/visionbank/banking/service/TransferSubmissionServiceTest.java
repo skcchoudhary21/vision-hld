@@ -17,6 +17,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.*;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -124,5 +125,34 @@ class TransferSubmissionServiceTest {
         assertThat(transfers.findById("resume-1").get().getState()).isEqualTo(TransferState.PENDING_APPROVAL);
         engineStub.verify(1, postRequestedFor(urlEqualTo("/approvals"))
                 .withRequestBody(containing("2030-01-01T00:00:00Z")));
+    }
+
+    @Test
+    void concurrentSubmitWithSameIdempotencyKeyNeverThrowsRawConstraintViolation() throws Exception {
+        engineStub.stubFor(post(urlEqualTo("/approvals"))
+                .willReturn(okJson("{\"requestId\":\"whatever\",\"state\":\"PENDING_APPROVAL\",\"version\":1}")));
+        String key = UUID.randomUUID().toString();
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Callable<Object> attempt = () -> {
+            startGate.await();
+            try {
+                return service.submit(smallTransfer(), key);
+            } catch (Exception e) {
+                return e;
+            }
+        };
+        Future<Object> a = pool.submit(attempt);
+        Future<Object> b = pool.submit(attempt);
+        startGate.countDown();
+
+        Object resultA = a.get(10, TimeUnit.SECONDS);
+        Object resultB = b.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        assertThat(resultA).isInstanceOf(TransferView.class);
+        assertThat(resultB).isInstanceOf(TransferView.class);
+        assertThat(((TransferView) resultA).transferId()).isEqualTo(((TransferView) resultB).transferId());
     }
 }

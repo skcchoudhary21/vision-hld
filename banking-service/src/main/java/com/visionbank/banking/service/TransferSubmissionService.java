@@ -9,6 +9,8 @@ import com.visionbank.banking.domain.Transfer;
 import com.visionbank.banking.policy.WorkflowSelection;
 import com.visionbank.banking.policy.PolicyResolver;
 import com.visionbank.banking.repository.TransferRepository;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -26,15 +28,18 @@ public class TransferSubmissionService {
     private final PolicyResolver policyResolver;
     private final ApprovalEngineClient approvalEngineClient;
     private final TransferPersistenceService persistenceService;
+    private final long approvalSlaSeconds;
 
     public TransferSubmissionService(TransferRepository transfers, CoreBankingClient coreBanking,
                                       PolicyResolver policyResolver, ApprovalEngineClient approvalEngineClient,
-                                      TransferPersistenceService persistenceService) {
+                                      TransferPersistenceService persistenceService,
+                                      @Value("${transfer.approval-sla-seconds}") long approvalSlaSeconds) {
         this.transfers = transfers;
         this.coreBanking = coreBanking;
         this.policyResolver = policyResolver;
         this.approvalEngineClient = approvalEngineClient;
         this.persistenceService = persistenceService;
+        this.approvalSlaSeconds = approvalSlaSeconds;
     }
 
     public TransferView submit(SubmitTransferCommand cmd, String idempotencyKey) {
@@ -49,6 +54,28 @@ public class TransferSubmissionService {
 
         ValidationResult validation = coreBanking.validate(cmd.fromAccount(), cmd.amountMinorUnits(), idempotencyKey);
         if (!validation.isValid()) {
+            // If validation failed with duplicate=true, another concurrent call with the same
+            // idempotencyKey may have passed validation and is inserting, or has already inserted.
+            // Retry re-reading the database a few times with small delays to wait for the
+            // concurrent call to complete its insert.
+            if (validation.duplicate()) {
+                for (int retry = 0; retry < 10; retry++) {
+                    Optional<Transfer> raceWinner = transfers.findByIdempotencyKey(idempotencyKey);
+                    if (raceWinner.isPresent()) {
+                        Transfer t = raceWinner.get();
+                        if (t.getApprovalRequestId() != null) {
+                            return new TransferView(t.getTransferId(), t.getState());
+                        }
+                        return completeWorkflowCreation(t, cmd);
+                    }
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
             throw new ValidationFailedException(
                     "sufficientBalance=" + validation.sufficientBalance()
                     + " withinLimit=" + validation.withinLimit()
@@ -56,8 +83,21 @@ public class TransferSubmissionService {
         }
 
         String transferId = UUID.randomUUID().toString();
-        Instant expiresAt = Instant.now().plusSeconds(86400);
-        Transfer created = persistenceService.persistCreated(transferId, cmd, idempotencyKey, expiresAt);
+        Instant expiresAt = Instant.now().plusSeconds(approvalSlaSeconds);
+        Transfer created;
+        try {
+            created = persistenceService.persistCreated(transferId, cmd, idempotencyKey, expiresAt);
+        } catch (DataIntegrityViolationException e) {
+            // Lost the race: another concurrent call with the same idempotencyKey committed
+            // first. Re-read and continue from wherever that winning row actually is, rather
+            // than propagate a raw constraint violation for what is, from the caller's
+            // perspective, a perfectly legitimate retry.
+            Transfer winner = transfers.findByIdempotencyKey(idempotencyKey).orElseThrow();
+            if (winner.getApprovalRequestId() != null) {
+                return new TransferView(winner.getTransferId(), winner.getState());
+            }
+            return completeWorkflowCreation(winner, cmd);
+        }
 
         return completeWorkflowCreation(created, cmd);
     }
