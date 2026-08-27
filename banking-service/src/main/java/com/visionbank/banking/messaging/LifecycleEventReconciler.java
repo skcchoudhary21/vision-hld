@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class LifecycleEventReconciler {
@@ -24,6 +26,14 @@ public class LifecycleEventReconciler {
 
     private final StringRedisTemplate redisTemplate;
     private final ApprovalEventListener eventListener;
+
+    // Guards against re-logging the same permanently-given-up message every 30s,
+    // forever -- PendingMessage.getId() is a stable RecordId, so seeing the same one
+    // again on the next tick is "still not resolved," not new information worth
+    // another ERROR line. A plain HashSet would be fine too (this method only ever
+    // runs on one thread at a time per Spring's @Scheduled(fixedDelay=...)
+    // semantics), but a concurrent set costs nothing and doesn't rely on that.
+    private final Set<RecordId> loggedGiveUps = ConcurrentHashMap.newKeySet();
 
     public LifecycleEventReconciler(StringRedisTemplate redisTemplate, ApprovalEventListener eventListener) {
         this.redisTemplate = redisTemplate;
@@ -45,8 +55,10 @@ public class LifecycleEventReconciler {
                 continue;
             }
             if (message.getTotalDeliveryCount() > MAX_DELIVERY_ATTEMPTS) {
-                log.error("Giving up on lifecycle event {} after {} delivery attempts -- leaving it unacknowledged for manual investigation",
-                        message.getId(), MAX_DELIVERY_ATTEMPTS);
+                if (loggedGiveUps.add(message.getId())) {
+                    log.error("Giving up on lifecycle event {} after {} delivery attempts -- leaving it unacknowledged for manual investigation",
+                            message.getId(), MAX_DELIVERY_ATTEMPTS);
+                }
                 continue; // deliberately NOT acknowledged: this is the dead-letter boundary this plan draws -- surfaced loudly, not silently dropped, and not auto-acked away
             }
             List<MapRecord<String, String, String>> claimed = redisTemplate.<String, String>opsForStream().claim(

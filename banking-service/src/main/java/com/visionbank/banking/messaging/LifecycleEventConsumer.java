@@ -41,8 +41,27 @@ public class LifecycleEventConsumer implements StreamListener<String, MapRecord<
         } catch (Exception e) {
             // BUSYGROUP: group already exists from a previous run against this Redis instance -- fine, continue.
         }
-        container.receive(Consumer.from(RedisStreamNames.LIFECYCLE_EVENT_CONSUMER_GROUP, CONSUMER_NAME),
-                StreamOffset.create(RedisStreamNames.LIFECYCLE_EVENT_STREAM, ReadOffset.lastConsumed()), this);
+        StreamMessageListenerContainer.StreamReadRequest<String> readRequest = StreamMessageListenerContainer.StreamReadRequest
+                .builder(StreamOffset.create(RedisStreamNames.LIFECYCLE_EVENT_STREAM, ReadOffset.lastConsumed()))
+                .consumer(Consumer.from(RedisStreamNames.LIFECYCLE_EVENT_CONSUMER_GROUP, CONSUMER_NAME))
+                // ConsumerStreamReadRequestBuilder defaults autoAck to TRUE (confirmed by
+                // decompiling spring-data-redis 4.1.1) -- the 3-arg receive(Consumer,
+                // StreamOffset, StreamListener) overload this replaces explicitly overrides
+                // that default to false. Without this override every message would be
+                // acknowledged the instant it's read, before onMessage() even runs, silently
+                // defeating the manual ack-on-success / leave-pending-on-failure contract
+                // this class and the reconciler both depend on.
+                .autoAcknowledge(false)
+                // Default StreamMessageListenerContainer behavior cancels the subscription
+                // PERMANENTLY on any error escaping the read loop (confirmed by decompiling
+                // spring-data-redis 4.1.1: StreamReadRequestBuilder's default
+                // cancelSubscriptionOnError predicate is `t -> true`) -- a single transient
+                // Redis blip would silently and permanently stop this consumer for the life
+                // of the JVM, with no reconciler able to recover it. Never cancel; per-message
+                // failures are already handled by onMessage()'s own try/catch.
+                .cancelOnError(t -> false)
+                .build();
+        container.register(readRequest, this);
     }
 
     @Override

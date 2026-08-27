@@ -46,7 +46,18 @@ public class ApprovalEventListener {
         Transfer transfer = transfers.findById(event.requestId())
                 .orElseThrow(() -> new TransferNotYetVisibleException(event.requestId()));
 
-        if (transfer.getState() == TransferState.CREATED) {
+        // CREATED: the normal pre-link window. FAILED: a transfer whose earlier creation
+        // attempt gave up (SubmissionCommandReconciler.giveUp() -> ApprovalCreationFailed)
+        // and was then resumed with the same Idempotency-Key (TransferSubmissionService
+        // .resumeIfNeeded() republishes unconditionally from FAILED) -- approval-engine
+        // creates a brand-new live workflow for the resumed attempt, and this is where
+        // banking-service must pick that link back up. Without FAILED matching here, the
+        // resumed workflow runs to completion on approval-engine's side while every event
+        // for it is silently discarded below (markProcessed, no state change) -- the two
+        // services diverge permanently with nothing surfaced anywhere. Neither
+        // markPendingApproval nor setState has a from-state guard, so re-linking from
+        // FAILED is exactly as safe as linking from CREATED.
+        if (transfer.getState() == TransferState.CREATED || transfer.getState() == TransferState.FAILED) {
             if ("ApprovalCreationFailed".equals(event.eventType())) {
                 setState(transfer, TransferState.FAILED);
                 notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
@@ -57,9 +68,10 @@ public class ApprovalEventListener {
             // Any other event type is the workflow-creation signal itself (ApprovalSubmitted,
             // always written first in ApprovalCommandService.doCreate()) or, in principle, a
             // later event that outran it -- either way, this is the first proof banking-service
-            // has that the workflow exists. Link now; the guarded UPDATE this mirrors on
-            // approval-engine's side has no equivalent here since there's only one row to update,
-            // not a race between callers.
+            // has that a workflow now exists (whether this is the original attempt or a
+            // resumed one). Link now; the guarded UPDATE this mirrors on approval-engine's
+            // side has no equivalent here since there's only one row to update, not a race
+            // between callers.
             persistenceService.markPendingApproval(transfer.getTransferId(), event.requestId());
         }
 
