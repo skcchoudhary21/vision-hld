@@ -42,6 +42,14 @@ public class ApprovalEventListener {
         Transfer transfer = transfers.findById(event.requestId())
                 .orElseThrow(() -> new TransferNotYetVisibleException(event.requestId()));
 
+        if ("ApprovalCreationFailed".equals(event.eventType()) && transfer.getState() == TransferState.CREATED) {
+            setState(transfer, TransferState.FAILED);
+            notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
+                    "Your transfer submission could not be processed. Please contact support or try again.");
+            markProcessed(event.eventId());
+            return;
+        }
+
         if (transfer.getState() == TransferState.CREATED) {
             // Event beat the local markPendingApproval commit — transient, not stale.
             // Do NOT mark processed: throwing here rolls back this transaction and the
@@ -76,8 +84,12 @@ public class ApprovalEventListener {
         // REJECTED/CANCELLED/EXPIRED) — a stale or duplicate-ish event on a settled transfer;
         // permanent no-op, mark processed below so it doesn't retry forever.
 
+        markProcessed(event.eventId());
+    }
+
+    private void markProcessed(String eventId) {
         ProcessedEvent processed = new ProcessedEvent();
-        processed.setEventId(event.eventId());
+        processed.setEventId(eventId);
         processed.setProcessedAt(Instant.now());
         processedEvents.save(processed);
     }

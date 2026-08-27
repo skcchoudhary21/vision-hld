@@ -77,6 +77,21 @@ class ApprovalEventListenerNotificationTest {
     }
 
     @Test
+    void creationFailedMarksTransferFailedAndNotifiesTheMaker() {
+        Transfer t = new Transfer();
+        t.setTransferId("t-created-fail");
+        t.setMakerId("maker-1");
+        t.setState(TransferState.CREATED);
+        t.setExpiresAt(Instant.now().plusSeconds(300));
+        t.setCreatedAt(Instant.now());
+        when(transfers.findById("t-created-fail")).thenReturn(Optional.of(t));
+
+        listener().handle(new IncomingEvent(UUID.randomUUID().toString(), "ApprovalCreationFailed", "t-created-fail"));
+
+        verify(notifications).notifyMaker(eq("maker-1"), eq("t-created-fail"), anyString());
+    }
+
+    @Test
     void duplicateEventDoesNotNotifyTwice() {
         Transfer t = pendingTransfer("t-dup");
         String eventId = UUID.randomUUID().toString();

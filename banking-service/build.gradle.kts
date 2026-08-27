@@ -26,6 +26,7 @@ dependencies {
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
     testImplementation("org.testcontainers:postgresql:1.20.4")
     testImplementation("org.wiremock:wiremock-standalone:3.9.2")
+    testImplementation("org.awaitility:awaitility:4.2.2")
 }
 
 tasks.withType<Test> { useJUnitPlatform() }
