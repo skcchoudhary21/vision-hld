@@ -37,9 +37,10 @@ submission is asynchronous now, so poll `GET /transfers/{id}` (with the same
 Amounts under 5,000.00 auto-release; 5,000–50,000 need 1 checker; 50,000+
 need 2. These are rows in Approval Engine's `policy_rule` table (seeded from
 `approval-engine`'s `application.yml`, editable at runtime via
-`PUT /policy-rules`), not a hardcoded rule in Banking Service — Banking's
-`PolicyResolver` just calls `GET /policy-rules/resolve` and gets back which
-workflow to instantiate.
+`PUT /policy-rules`), not a hardcoded rule in Banking Service. Resolution now
+happens in-process inside approval-engine's `SubmissionCommandConsumer` (via
+`PolicyRuleResolutionService`) when it consumes the creation command off the
+Redis stream — not a synchronous call out of Banking Service.
 
 Run each service's tests independently:
 ```bash
@@ -58,7 +59,7 @@ cd banking-service && ./gradlew test
   each with one consumer group. `POST /transfers` now returns `CREATED`
   immediately — the workflow link happens asynchronously, typically within
   a couple seconds. At-least-once delivery (a message stays pending until
-  acknowledged, reclaimable via `XAUTOCLAIM` after 30s) is safe here
+  acknowledged, reclaimable via `XPENDING` + `XCLAIM` after 30s) is safe here
   because every consumer is already idempotent: `ApprovalCommandService.
   create()` by `Idempotency-Key`+body-hash, `ApprovalEventListener.handle()`
   by `processed_event.event_id`.

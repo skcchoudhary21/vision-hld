@@ -49,8 +49,11 @@ service — omitted here; doesn't change the ownership or consistency model.
 pattern deliberately.
 
 Policy lives entirely in Approval Engine as an editable `policy_rule` table (amount range →
-`workflowId`/`workflowVersion`) — Banking's `PolicyResolver` is a thin HTTP call to `GET
-/policy-rules/resolve`. Required-approvals count and eligible role are attributes of the
+`workflowId`/`workflowVersion`), resolved in-process inside `SubmissionCommandConsumer` (via
+`PolicyRuleResolutionService`) when it consumes the creation command off the Redis stream —
+Banking Service no longer calls out to resolve it (its `PolicyResolver`/
+`ApprovalEngineClient.resolvePolicy()` classes still exist in source but have zero callers).
+Required-approvals count and eligible role are attributes of the
 resolved workflow's own `approve` transition, not a separate policy object — one source of
 truth, in the service that already owns the workflow catalog those rules route to.
 
@@ -60,7 +63,7 @@ truth, in the service that already owns the workflow catalog those rules route t
 |---|---|---|
 | Client → Banking | REST sync | Fails fast, retryable |
 | Banking → Engine (submission) | Redis Stream, at-least-once | Message persists in Redis; `POST /transfers` never blocks on Engine's availability |
-| Engine → Banking (lifecycle events) | Redis Stream, at-least-once | Message persists in Redis; reclaimed via `XAUTOCLAIM` if a consumer crashes mid-handling |
+| Engine → Banking (lifecycle events) | Redis Stream, at-least-once | Message persists in Redis; reclaimed via `XPENDING` + `XCLAIM` if a consumer crashes mid-handling |
 | Banking → Core Banking (release) | REST sync, idempotent by `transferId` | Stays `RELEASE_PENDING`, retried |
 
 **Consistency:** strong/transactional within each service; **eventually consistent across the

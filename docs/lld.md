@@ -246,7 +246,7 @@ of actors, is the simplest option that's actually correct.
 Two streams, one consumer group each: `stream:transfer-approval-create` (`approval-engine-workers`)
 and `stream:approval-lifecycle-events` (`banking-service-workers`). Both are at-least-once —
 a message stays in the group's pending-entries list until `XACK`'d; `SubmissionCommandReconciler`
-/ `LifecycleEventReconciler` reclaim anything idle past 30s via `XAUTOCLAIM` (the Redis-native
+/ `LifecycleEventReconciler` reclaim anything idle past 30s via `XPENDING` + `XCLAIM` (the Redis-native
 equivalent of `OutboxClaimService`'s `claimed_at` staleness window) and retry it. The submission
 side additionally gives up after 3 delivery attempts, publishing `ApprovalCreationFailed` onto
 the lifecycle stream so banking-service can move the transfer to `FAILED` and notify the maker —
@@ -261,7 +261,7 @@ before Redis existed: `ApprovalCommandService.create()` by `(Idempotency-Key, bo
 
 | Failure | Behavior |
 |---|---|
-| Engine unreachable during `submit()` | Fails synchronously; retry with same `Idempotency-Key` |
+| Engine unreachable during `submit()` | Transfer still reaches `CREATED` immediately; the creation command persists in `stream:transfer-approval-create` and `SubmissionCommandReconciler` retries it until Engine comes back, giving up only after `MAX_DELIVERY_ATTEMPTS` (3) — at which point the transfer moves to `FAILED` and the maker is notified |
 | Banking Service unreachable during approve/reject/cancel | Engine still transitions/audits; only delivery delays |
 | Relay crashes mid-publish | Row stays `claimed_at`-set; reclaimed after 30s |
 | Duplicate event delivery | `processed_event(event_id)` dedupe — no-op replay |
