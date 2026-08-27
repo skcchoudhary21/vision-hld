@@ -47,4 +47,16 @@ public class TransferPersistenceService {
         transfer.setState(TransferState.PENDING_APPROVAL);
         return transfers.save(transfer);
     }
+
+    // Test-fixture helper: lets TransferSubmissionServiceTest set up a row in FAILED
+    // state (the realistic "publish attempt failed, try again" state a resume needs
+    // to handle, now that submit() always publishes right after persistCreated()).
+    // Production code never reaches FAILED through this class -- that transition is
+    // driven by ApprovalEventListener's own setState(transfer, state) helper.
+    @Transactional
+    public Transfer markFailed(String transferId) {
+        Transfer transfer = transfers.findById(transferId).orElseThrow();
+        transfer.setState(TransferState.FAILED);
+        return transfers.save(transfer);
+    }
 }
