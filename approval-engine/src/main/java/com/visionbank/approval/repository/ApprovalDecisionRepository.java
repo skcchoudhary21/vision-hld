@@ -26,4 +26,11 @@ public interface ApprovalDecisionRepository extends JpaRepository<ApprovalDecisi
     // actor who genuinely never decided under THIS role still gets a clear signal instead of
     // a silent, misleading 200.
     boolean existsByRequestIdAndActorIdAndActorRole(String requestId, String actorId, String actorRole);
+
+    // reject()'s idempotency check: reject is a one-shot terminal transition (no quorum,
+    // unlike approve), so unlike existsByRequestIdAndActorIdAndState above, the state the
+    // request was in when this actor rejected it no longer exists to key on by the time a
+    // retry lands (the request has already moved to the terminal REJECTED state) -- decision
+    // type alone is enough since a given request can only ever be rejected once, period.
+    boolean existsByRequestIdAndActorIdAndDecision(String requestId, String actorId, ApprovalDecision.DecisionType decision);
 }

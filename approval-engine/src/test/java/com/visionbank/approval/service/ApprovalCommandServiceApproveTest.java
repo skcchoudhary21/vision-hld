@@ -1,5 +1,7 @@
 package com.visionbank.approval.service;
 
+import com.visionbank.approval.domain.ApprovalDecision;
+import com.visionbank.approval.repository.ApprovalDecisionRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,6 +33,9 @@ class ApprovalCommandServiceApproveTest {
 
     @Autowired
     ApprovalCommandService service;
+
+    @Autowired
+    ApprovalDecisionRepository decisions;
 
     private String createPending(String requestId, String workflowId) {
         service.create(new CreateApprovalRequest(requestId, "TRANSFER_APPROVAL", "maker-1",
@@ -106,6 +111,36 @@ class ApprovalCommandServiceApproveTest {
         ApprovalRequestView view = service.reject(id, "checker-1", "TRANSFER_CHECKER");
 
         assertThat(view.state()).isEqualTo("REJECTED");
+    }
+
+    @Test
+    void rejectRecordsADecisionRowLikeApproveDoes() {
+        String id = createPending("req-reject-decision", "transfer-single-checker");
+
+        service.reject(id, "checker-1", "TRANSFER_CHECKER");
+
+        assertThat(decisions.existsByRequestIdAndActorIdAndDecision(id, "checker-1", ApprovalDecision.DecisionType.REJECT))
+                .isTrue();
+    }
+
+    @Test
+    void retryingRejectAfterItAlreadySucceededReplaysInsteadOfConflicting() {
+        String id = createPending("req-reject-retry", "transfer-single-checker");
+        ApprovalRequestView first = service.reject(id, "checker-1", "TRANSFER_CHECKER");
+
+        ApprovalRequestView retried = service.reject(id, "checker-1", "TRANSFER_CHECKER");
+
+        assertThat(retried.state()).isEqualTo("REJECTED");
+        assertThat(retried.version()).isEqualTo(first.version());
+    }
+
+    @Test
+    void aDifferentCheckerRejectingAfterItsAlreadyRejectedStillConflicts() {
+        String id = createPending("req-reject-race", "transfer-single-checker");
+        service.reject(id, "checker-1", "TRANSFER_CHECKER");
+
+        assertThatThrownBy(() -> service.reject(id, "checker-2", "TRANSFER_CHECKER"))
+                .isInstanceOf(ConcurrentStateChangeException.class);
     }
 
     @Test

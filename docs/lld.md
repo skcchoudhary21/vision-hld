@@ -7,13 +7,17 @@
 ```mermaid
 stateDiagram-v2
     [*] --> SUBMITTED
-    SUBMITTED --> APPROVED: auto_approve [no_approval_required]
-    SUBMITTED --> PENDING_APPROVAL: require_approval [approval_required]
-    PENDING_APPROVAL --> APPROVED: approve [approvals_satisfied]
-    PENDING_APPROVAL --> REJECTED: reject [actor_is_eligible_checker]
+    SUBMITTED --> APPROVED: auto_approve\n(transfer-auto-release only)
+    SUBMITTED --> PENDING_APPROVAL: require_approval\n(single-checker / high-value)
+    PENDING_APPROVAL --> APPROVED: approve [approvals_satisfied, actor_is_not_maker]
+    PENDING_APPROVAL --> REJECTED: reject [allowedRoles: TRANSFER_CHECKER]
     PENDING_APPROVAL --> CANCELLED: cancel [actor_is_maker]
     PENDING_APPROVAL --> EXPIRED: expire [sla_expired]
 ```
+
+Shown merged for readability; `transfer-auto-release` only has the top edge, the other two
+transfer workflows only have the bottom five — no single workflow contains both (see Workflow
+Definitions below).
 
 ## Transfer Release Lifecycle (Banking Service)
 
@@ -34,65 +38,54 @@ stateDiagram-v2
 each event applies only if Transfer is still in the expected state (a lost race is a logged
 no-op). No `RELEASE_FAILED`: a transient core-banking failure retries in place.
 
-## Workflow Definition (`approval-engine/src/main/resources/workflow/definitions/transfer-approval.yaml`)
+## Workflow Definitions (one fixed-shape YAML per tier, not guard-branching in one workflow)
 
-```yaml
-name: transfer-approval
-version: 1
-states: [SUBMITTED, PENDING_APPROVAL, APPROVED, REJECTED, CANCELLED, EXPIRED]
-initialState: SUBMITTED
-transitions:
-  - name: auto_approve
-    from: SUBMITTED
-    to: APPROVED
-    guard: no_approval_required
-  - name: require_approval
-    from: SUBMITTED
-    to: PENDING_APPROVAL
-    guard: approval_required
-  - name: approve
-    from: PENDING_APPROVAL
-    to: APPROVED
-    guard: approvals_satisfied
-  - name: reject
-    from: PENDING_APPROVAL
-    to: REJECTED
-    guard: actor_is_eligible_checker
-  - name: cancel
-    from: PENDING_APPROVAL
-    to: CANCELLED
-    guard: actor_is_maker
-  - name: expire
-    from: PENDING_APPROVAL
-    to: EXPIRED
-    guard: sla_expired
-```
+Every workflow YAML under `approval-engine/src/main/resources/workflow/definitions/` declares
+its own states, transitions, and per-transition `allowedRoles`/`requiredApprovals` — routing
+between tiers happens *before* the engine, by picking which workflow to instantiate (see Policy
+Contract below), not by a guard branching inside one shared workflow:
 
-Loaded once at startup into a `Map<(fromState, event), Transition>`; guards are a small fixed
-Java registry looked up by name — no expression language, no runtime reconfiguration.
+| Workflow (`workflowId:version`) | States | `approve` requires |
+|---|---|---|
+| `transfer-auto-release:1` | SUBMITTED → APPROVED | 0 approvals (unconditional transition) |
+| `transfer-single-checker:1` | + PENDING_APPROVAL, REJECTED, CANCELLED, EXPIRED | 1 × `TRANSFER_CHECKER` |
+| `transfer-high-value:1` | same shape as single-checker | 2 × `TRANSFER_CHECKER` |
+| `privileged-access:2` | SUBMITTED → SECURITY_REVIEW → MANAGER_APPROVAL → COMPLIANCE_REVIEW → APPROVED | 2 × `SECURITY_CHECKER`, then 1 × `MANAGER_CHECKER`, then 1 × `COMPLIANCE_CHECKER` |
+
+All definitions load once at startup into a `WorkflowRegistry` keyed by `(workflowId, version)`;
+guards (`approvals_satisfied`, `actor_is_maker`, `actor_is_not_maker`, `sla_expired`) are a small
+fixed Java registry looked up by name — no expression language, no runtime reconfiguration. Role
+eligibility is declarative (`allowedRoles` on the transition), not a guard function.
 
 ## Policy Contract
 
-`PolicyResolver.resolve(amountMinorUnits) -> ApprovalPolicy{requiredApprovals, eligibleRoles,
-makerCanApprove}` — resolved once in Banking Service at submission, frozen into the engine's
-`policy_snapshot` (JSONB), never re-resolved; a later policy change never re-judges an
-in-flight request.
+`policy_rule(id PK, min_amount_minor_units, max_amount_minor_units nullable, workflow_id,
+workflow_version)` — an editable table in Approval Engine, not a formula in Banking. `GET
+/policy-rules/resolve?amountMinorUnits=N` returns the first row covering `N` as `{workflowId,
+workflowVersion}` (404 `POLICY_RULE_NOT_FOUND` if none covers it). Seeded once from
+`application.yml`'s ceiling values (AED 5,000 / 50,000 minor units) into the three transfer
+tiers; editable afterward via `PUT /policy-rules`, no redeploy.
+
+Banking's `PolicyResolver` only resolves *which workflow* — required-approvals count and
+eligible role aren't a separate policy object on the wire; they're the resolved workflow's own
+`approve` transition (`requiredApprovals`, `allowedRoles`), frozen into `policy_snapshot`
+(embeds the full `WorkflowDefinition`) at creation and never re-resolved.
 
 ## API Contracts
 
-**`POST /approvals`** (Engine; header `Idempotency-Key`)
+**`GET /policy-rules/resolve?amountMinorUnits=N`** (Engine) → `{ "workflowId": "transfer-single-checker", "workflowVersion": 1 }`, or `404 POLICY_RULE_NOT_FOUND`.
+
+**`POST /approvals`** (Engine; header `Idempotency-Key`) — caller names the already-resolved workflow, not a policy shape.
 ```json
 // Request
 {
-  "requestId": "transfer-abc123", "requestType": "TRANSFER_APPROVAL",
-  "makerId": "maker-1",
-  "stagePolicies": { "PENDING_APPROVAL": { "requiredApprovals": 2, "eligibleRoles": ["TRANSFER_CHECKER"] } },
-  "makerCanApprove": false,
+  "requestId": "abc123", "requestType": "TRANSFER_APPROVAL", "makerId": "maker-1",
+  "workflowId": "transfer-single-checker", "workflowVersion": 1, "policyVersion": "v1",
   "payloadJson": "{\"transferId\":\"abc123\",\"amount\":500000}",
   "expiresAt": "2026-08-26T10:00:00Z"
 }
 // 200 Response
-{ "requestId": "transfer-abc123", "state": "PENDING_APPROVAL", "version": 1 }
+{ "requestId": "abc123", "state": "PENDING_APPROVAL", "version": 1 }
 ```
 
 **`POST /approvals/{id}/approve`** (no `Idempotency-Key` — idempotent per `(request_id,
@@ -111,6 +104,15 @@ actor_id, state)`)
 ```
 `reject`/`cancel` share this shape (`ActorCommandDto`/`ApprovalResponseDto`/`ErrorResponseDto`);
 `GET /approvals/{id}` returns `ApprovalResponseDto`.
+
+| Error `code` | HTTP | When |
+|---|---|---|
+| `CONCURRENT_STATE_CHANGE` | 409 | Guarded UPDATE lost the race; action was legal, someone else won it first |
+| `INVALID_STATE_TRANSITION` | 409 | Action was never legal from any state that could reach the current one |
+| `IDEMPOTENCY_CONFLICT` | 409 | Same `Idempotency-Key`/`requestId` replayed with a different body |
+| `FORBIDDEN_ACTION` | 403 | Actor role not eligible for this transition (or maker self-approving) |
+| `NOT_FOUND` / `WORKFLOW_NOT_FOUND` / `POLICY_RULE_NOT_FOUND` | 404 | Unknown request / workflow / no policy rule covers the amount |
+| `INVALID_REQUEST` | 400 | e.g. `mine=true` without `X-Actor-Role` |
 
 **`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call.
 ```json
@@ -138,6 +140,8 @@ audit_log(audit_id PK, request_id, actor_id, actor_role, action,
 idempotency_key(idem_key PK, command_type, request_id, request_hash, result jsonb, created_at)
 outbox(event_id PK, request_id, event_type, event_version, payload jsonb,
        created_at, published_at, claimed_at)
+policy_rule(id PK, min_amount_minor_units, max_amount_minor_units nullable,
+            workflow_id, workflow_version)
 
 -- transfer DB
 transfer(transfer_id PK, maker_id, from_account, to_account, amount_minor_units,
@@ -155,8 +159,9 @@ sequenceDiagram
     participant T as Banking Service
     participant E as Approval Engine
     participant R as Outbox Relay
-    T->>E: POST /approvals (Idempotency-Key)
-    E->>E: guard no_approval_required passes -> APPROVED
+    T->>E: GET /policy-rules/resolve?amountMinorUnits=... -> transfer-auto-release:1
+    T->>E: POST /approvals (Idempotency-Key, workflowId=transfer-auto-release)
+    E->>E: only transition from SUBMITTED is unconditional -> APPROVED
     E->>E: commit: state + audit + outbox(ApprovalSubmitted, ApprovalApproved)
     E-->>T: 200 { state: APPROVED }
     R->>E: poll: claim unpublished (FOR UPDATE SKIP LOCKED)

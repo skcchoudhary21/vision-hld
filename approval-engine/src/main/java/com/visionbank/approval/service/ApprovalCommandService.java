@@ -207,6 +207,15 @@ public class ApprovalCommandService {
         WorkflowDefinition workflow = workflowFor(request);
         String currentState = request.getState();
 
+        // Checked before the transition lookup, not after: reject is terminal, so by the time
+        // a retry from the SAME actor lands, currentState has already moved to REJECTED and
+        // there's no outgoing "reject" transition from there to even find -- without this
+        // check the retry would fall into classifyRaceOrIllegal and get a spurious 409
+        // CONCURRENT_STATE_CHANGE instead of replaying the decision it already made.
+        if (decisions.existsByRequestIdAndActorIdAndDecision(requestId, actorId, ApprovalDecision.DecisionType.REJECT)) {
+            return toView(request);
+        }
+
         Transition transition = workflow.transitionsFrom(currentState).stream()
                 .filter(t -> t.name().equals("reject"))
                 .findFirst()
@@ -232,6 +241,16 @@ public class ApprovalCommandService {
             ApprovalRequest latest = requests.findByRequestId(requestId).orElseThrow();
             throw classifyRaceOrIllegal(requestId, workflow, latest.getState(), latest.getVersion(), "reject");
         }
+
+        ApprovalDecision decision = new ApprovalDecision();
+        decision.setRequestId(requestId);
+        decision.setActorId(actorId);
+        decision.setActorRole(actorRole);
+        decision.setState(currentState);
+        decision.setDecision(ApprovalDecision.DecisionType.REJECT);
+        decision.setCreatedAt(Instant.now());
+        decisions.save(decision);
+
         writeAudit(requestId, actorId, actorRole, "REJECTED", currentState, transition.to());
         fireEvents(workflow, requestId, transition.to());
         return new ApprovalRequestView(requestId, transition.to(), request.getVersion() + 1);

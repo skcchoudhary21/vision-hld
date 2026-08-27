@@ -9,6 +9,7 @@ import com.visionbank.banking.domain.Transfer;
 import com.visionbank.banking.policy.WorkflowSelection;
 import com.visionbank.banking.policy.PolicyResolver;
 import com.visionbank.banking.repository.TransferRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -26,15 +27,18 @@ public class TransferSubmissionService {
     private final PolicyResolver policyResolver;
     private final ApprovalEngineClient approvalEngineClient;
     private final TransferPersistenceService persistenceService;
+    private final long approvalSlaSeconds;
 
     public TransferSubmissionService(TransferRepository transfers, CoreBankingClient coreBanking,
                                       PolicyResolver policyResolver, ApprovalEngineClient approvalEngineClient,
-                                      TransferPersistenceService persistenceService) {
+                                      TransferPersistenceService persistenceService,
+                                      @Value("${transfer.approval-sla-seconds}") long approvalSlaSeconds) {
         this.transfers = transfers;
         this.coreBanking = coreBanking;
         this.policyResolver = policyResolver;
         this.approvalEngineClient = approvalEngineClient;
         this.persistenceService = persistenceService;
+        this.approvalSlaSeconds = approvalSlaSeconds;
     }
 
     public TransferView submit(SubmitTransferCommand cmd, String idempotencyKey) {
@@ -56,7 +60,7 @@ public class TransferSubmissionService {
         }
 
         String transferId = UUID.randomUUID().toString();
-        Instant expiresAt = Instant.now().plusSeconds(86400);
+        Instant expiresAt = Instant.now().plusSeconds(approvalSlaSeconds);
         Transfer created = persistenceService.persistCreated(transferId, cmd, idempotencyKey, expiresAt);
 
         return completeWorkflowCreation(created, cmd);
