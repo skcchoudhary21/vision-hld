@@ -8,8 +8,10 @@ import com.visionbank.approval.workflow.GuardRegistry;
 import com.visionbank.approval.workflow.Transition;
 import com.visionbank.approval.workflow.WorkflowDefinition;
 import com.visionbank.approval.workflow.WorkflowRegistry;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
@@ -31,12 +33,13 @@ public class ApprovalCommandService {
     private final IdempotencyRecordRepository idempotency;
     private final WorkflowRegistry workflowRegistry;
     private final GuardRegistry guards;
+    private final ApprovalCommandService self; // proxy reference -- see create()/doCreate() below
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApprovalCommandService(ApprovalRequestRepository requests, ApprovalDecisionRepository decisions,
                                    AuditLogRepository audits, OutboxEventRepository outbox,
                                    IdempotencyRecordRepository idempotency, WorkflowRegistry workflowRegistry,
-                                   GuardRegistry guards) {
+                                   GuardRegistry guards, @Lazy ApprovalCommandService self) {
         this.requests = requests;
         this.decisions = decisions;
         this.audits = audits;
@@ -44,6 +47,7 @@ public class ApprovalCommandService {
         this.idempotency = idempotency;
         this.workflowRegistry = workflowRegistry;
         this.guards = guards;
+        this.self = self;
     }
 
     // Every operation on an EXISTING request reads its own frozen copy -- never the
@@ -56,7 +60,12 @@ public class ApprovalCommandService {
         return transition.allowedRoles().isEmpty() || transition.allowedRoles().contains(actorRole);
     }
 
-    @Transactional
+    // NOT @Transactional here anymore. Each read below is its own implicit
+    // Spring Data JPA transaction; doCreate() below opens its own REQUIRES_NEW
+    // transaction through the `self` proxy. A failure in doCreate() rolls back
+    // only that isolated attempt -- this method is never left holding a
+    // transaction Postgres has already poisoned, so the recovery re-read after
+    // a lost race always runs clean.
     public ApprovalRequestView create(CreateApprovalRequest cmd, String idempotencyKey) {
         String hash = hash(cmd);
         Optional<IdempotencyRecord> existing = idempotency.findById(idempotencyKey);
@@ -73,13 +82,14 @@ public class ApprovalCommandService {
         }
 
         try {
-            return doCreate(cmd, idempotencyKey, hash);
+            return self.doCreate(cmd, idempotencyKey, hash);
         } catch (DataIntegrityViolationException e) {
             // Lost the race: the other concurrent caller's insert committed first (same
             // idempotencyKey, same requestId is impossible here since requestId is the PK
             // on approval_request and idempotencyKey is the PK on idempotency_key -- either
             // constraint firing means someone else just finished creating this exact request).
-            // Re-read and replay rather than propagate a raw constraint violation to the caller.
+            // doCreate() ran in its own already-rolled-back REQUIRES_NEW transaction, so this
+            // re-read runs in a fresh transaction of its own -- never the poisoned one.
             Optional<IdempotencyRecord> winner = idempotency.findById(idempotencyKey);
             if (winner.isPresent()) {
                 ApprovalRequest replayed = requests.findByRequestId(winner.get().getRequestId()).orElseThrow();
@@ -93,7 +103,8 @@ public class ApprovalCommandService {
         }
     }
 
-    private ApprovalRequestView doCreate(CreateApprovalRequest cmd, String idempotencyKey, String hash) {
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public ApprovalRequestView doCreate(CreateApprovalRequest cmd, String idempotencyKey, String hash) {
         WorkflowDefinition resolvedWorkflow;
         try {
             resolvedWorkflow = workflowRegistry.get(cmd.workflowId(), cmd.workflowVersion());
