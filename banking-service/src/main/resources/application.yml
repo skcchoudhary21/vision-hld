@@ -12,3 +12,5 @@ spring:
       ddl-auto: update
 approval-engine:
   base-url: http://localhost:8081
+transfer:
+  approval-sla-seconds: 300 # un-actioned request expires 5 minutes after submission

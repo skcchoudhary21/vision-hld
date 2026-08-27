@@ -3,6 +3,7 @@ package com.visionbank.banking.approval;
 import com.visionbank.banking.domain.ProcessedEvent;
 import com.visionbank.banking.domain.Transfer;
 import com.visionbank.banking.domain.TransferState;
+import com.visionbank.banking.notification.NotificationClient;
 import com.visionbank.banking.repository.ProcessedEventRepository;
 import com.visionbank.banking.repository.TransferRepository;
 import com.visionbank.banking.service.ReleaseService;
@@ -17,12 +18,14 @@ public class ApprovalEventListener {
     private final TransferRepository transfers;
     private final ProcessedEventRepository processedEvents;
     private final ReleaseService releaseService;
+    private final NotificationClient notifications;
 
     public ApprovalEventListener(TransferRepository transfers, ProcessedEventRepository processedEvents,
-                                  ReleaseService releaseService) {
+                                  ReleaseService releaseService, NotificationClient notifications) {
         this.transfers = transfers;
         this.processedEvents = processedEvents;
         this.releaseService = releaseService;
+        this.notifications = notifications;
     }
 
     @Transactional
@@ -49,10 +52,22 @@ public class ApprovalEventListener {
 
         if (transfer.getState() == TransferState.PENDING_APPROVAL) {
             switch (event.eventType()) {
-                case "ApprovalApproved" -> releaseService.release(transfer);
-                case "ApprovalRejected" -> setState(transfer, TransferState.REJECTED);
-                case "ApprovalCancelled" -> setState(transfer, TransferState.CANCELLED);
-                case "ApprovalExpired" -> setState(transfer, TransferState.EXPIRED);
+                case "ApprovalApproved" -> {
+                    releaseService.release(transfer);
+                    notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
+                            "Your transfer was approved and is " + transfer.getState() + ".");
+                }
+                case "ApprovalRejected" -> {
+                    setState(transfer, TransferState.REJECTED);
+                    notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
+                            "Your transfer was rejected by a checker.");
+                }
+                case "ApprovalCancelled" -> setState(transfer, TransferState.CANCELLED); // maker's own action — no self-notification
+                case "ApprovalExpired" -> {
+                    setState(transfer, TransferState.EXPIRED);
+                    notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
+                            "Your transfer expired without a decision within the approval SLA.");
+                }
                 case "ApprovalSubmitted" -> { /* no-op — transfer already PENDING_APPROVAL */ }
                 default -> { /* unknown event type — ignore rather than fail the whole delivery */ }
             }

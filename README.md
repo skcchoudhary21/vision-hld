@@ -30,8 +30,11 @@ curl -X POST http://localhost:8080/transfers \
   -d '{"makerId":"maker-1","fromAccount":"ACC-FUNDED","toAccount":"ACC-DEST","amountMinorUnits":100000,"currency":"AED"}'
 ```
 Amounts under 5,000.00 auto-release; 5,000–50,000 need 1 checker; 50,000+
-need 2. See `docs/superpowers/specs/.../` §8 or `banking-service`'s
-`PolicyResolver` for the exact thresholds.
+need 2. These are rows in Approval Engine's `policy_rule` table (seeded from
+`approval-engine`'s `application.yml`, editable at runtime via
+`PUT /policy-rules`), not a hardcoded rule in Banking Service — Banking's
+`PolicyResolver` just calls `GET /policy-rules/resolve` and gets back which
+workflow to instantiate.
 
 Run each service's tests independently:
 ```bash
@@ -55,6 +58,15 @@ cd banking-service && ./gradlew test
 - Core Banking is stubbed behind a `CoreBankingClient` interface inside
   Banking Service, per the assignment's explicit allowance — not a third
   deployable service.
+- Maker notification (approval outcome, expiry) is a `NotificationClient`
+  interface, same pattern as Core Banking; `LoggingNotificationClient` logs
+  instead of sending email/SMS, per the assignment's allowance to mock
+  notifications. Wired on `ApprovalRejected`/`ApprovalExpired` (not
+  `ApprovalCancelled` — the maker caused that one themselves).
+- The approval SLA (`transfer.approval-sla-seconds`, banking-service
+  `application.yml`) defaults to 300s (5 minutes) here, not the assignment's
+  illustrative 24 hours, so expiry is observable in a short demo session —
+  `ExpirySweeper` already polls every 60s, comfortably inside that window.
 
 ## What I'd do differently with more time
 
@@ -67,6 +79,7 @@ cd banking-service && ./gradlew test
 - A retry scheduler polling `RELEASE_PENDING` transfers for core-banking
   failures (the state exists; the poller doesn't, since the stub never fails).
 - Real authentication instead of trusting `actorId`/`actorRole` in request bodies.
+- Real email/SMS delivery behind `NotificationClient` instead of the logging stub.
 - The multi-workflow generalization (a second, differently-shaped workflow —
   privileged-access — genuinely running through the same engine, no code
   changes, just a new YAML file) is now built and verified end-to-end, not
