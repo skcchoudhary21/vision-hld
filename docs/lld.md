@@ -241,6 +241,22 @@ race without a lock but turns a synchronous decision eventually-consistent for n
 this scale. A `PESSIMISTIC_WRITE` held for one short cycle, on one row, contended by a handful
 of actors, is the simplest option that's actually correct.
 
+## Redis Stream Delivery
+
+Two streams, one consumer group each: `stream:transfer-approval-create` (`approval-engine-workers`)
+and `stream:approval-lifecycle-events` (`banking-service-workers`). Both are at-least-once —
+a message stays in the group's pending-entries list until `XACK`'d; `SubmissionCommandReconciler`
+/ `LifecycleEventReconciler` reclaim anything idle past 30s via `XAUTOCLAIM` (the Redis-native
+equivalent of `OutboxClaimService`'s `claimed_at` staleness window) and retry it. The submission
+side additionally gives up after 3 delivery attempts, publishing `ApprovalCreationFailed` onto
+the lifecycle stream so banking-service can move the transfer to `FAILED` and notify the maker —
+the lifecycle side has no equivalent failure state to move to, so it logs loudly past 5 attempts
+rather than silently dropping the message (a full dead-letter mechanism is out of scope).
+
+Redelivery is safe everywhere it can happen because every consumer here was already idempotent
+before Redis existed: `ApprovalCommandService.create()` by `(Idempotency-Key, body hash)`,
+`ApprovalEventListener.handle()` by `processed_event.event_id`.
+
 ## Failure Semantics
 
 | Failure | Behavior |

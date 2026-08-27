@@ -17,9 +17,10 @@ and the two Spring Boot services.
 flowchart LR
     User["Corporate banking user"] -->|"REST"| TS["Banking Service :8080"]
     UI["Approval Console UI\n(React SPA, :3000)"] -->|"REST (own origin, CORS)"| TS
-    TS -->|"GET /policy-rules/resolve (sync)"| AE["Approval Engine :8081"]
-    TS -->|"POST /approvals (sync, Idempotency-Key)"| AE
-    AE -.->|"outbox relay: POST /internal/events (async, at-least-once)"| TS
+    TS -->|"XADD stream:transfer-approval-create (async)"| REDIS[("Redis Streams")]
+    REDIS -->|"consumer group"| AE["Approval Engine :8081"]
+    AE -->|"XADD stream:approval-lifecycle-events (async)"| REDIS
+    REDIS -->|"consumer group"| TS
     TS -->|"REST (validate, release)"| CB["CoreBankingClient\n(stub, in-process)"]
     TS --> TDB[("transfer DB")]
     AE --> ADB[("approval DB")]
@@ -58,9 +59,8 @@ truth, in the service that already owns the workflow catalog those rules route t
 | Flow | Pattern | If unavailable |
 |---|---|---|
 | Client → Banking | REST sync | Fails fast, retryable |
-| Banking → Engine (policy resolve) | REST sync | Fails fast; submission never starts a workflow un-costed |
-| Banking → Engine (create) | REST sync + `Idempotency-Key` | Retry same key, no duplicate workflow |
-| Engine → Banking (lifecycle events) | Outbox + polling relay | Event durable in DB, relay retries |
+| Banking → Engine (submission) | Redis Stream, at-least-once | Message persists in Redis; `POST /transfers` never blocks on Engine's availability |
+| Engine → Banking (lifecycle events) | Redis Stream, at-least-once | Message persists in Redis; reclaimed via `XAUTOCLAIM` if a consumer crashes mid-handling |
 | Banking → Core Banking (release) | REST sync, idempotent by `transferId` | Stays `RELEASE_PENDING`, retried |
 
 **Consistency:** strong/transactional within each service; **eventually consistent across the
@@ -68,6 +68,12 @@ boundary** — no distributed transaction, outbox is the seam that makes partial
 Resilience is asymmetric by design: Engine down breaks `submit()` synchronously (blocking call
 on the critical path); Banking down does **not** break approve/reject/cancel — the engine's
 state machine never depends on Banking's reachability, only async delivery does.
+
+**Updated:** Engine being down no longer breaks `submit()` synchronously — that was true when
+submission was a blocking HTTP call; it no longer is. A transfer now always reaches `CREATED`
+immediately, and the workflow-creation step retries against Redis until Engine comes back,
+giving up only after `SubmissionCommandReconciler`'s delivery-attempt ceiling (§ see LLD),
+at which point the transfer moves to `FAILED` and the maker is notified.
 
 ## NFRs
 
