@@ -99,15 +99,36 @@ class ApprovalEventListenerTest {
     }
 
     @Test
-    void eventArrivingBeforeTransferIsLinkedThrowsAndDoesNotMarkProcessed() {
+    void eventArrivingWhileStillCreatedLinksTheTransferThenProcessesIt() {
+        // The bug this class now guards against: before the fix, an event arriving
+        // while the transfer was still CREATED threw TransferNotYetVisibleException
+        // forever, because nothing in production ever called markPendingApproval.
+        // The corrected behavior is that the first event to arrive performs the link
+        // itself (see ApprovalEventListener.handle()) and then falls through to the
+        // same switch every other event uses -- no throw, no permanently stuck transfer.
         createdTransfer("t-created-1");
         String eventId = UUID.randomUUID().toString();
 
+        listener.handle(new IncomingEvent(eventId, "ApprovalApproved", "t-created-1"));
+
+        Transfer updated = transfers.findById("t-created-1").get();
+        assertThat(updated.getApprovalRequestId()).isEqualTo("t-created-1");
+        assertThat(updated.getState()).isEqualTo(TransferState.RELEASED);
+        assertThat(processedEvents.existsById(eventId)).isTrue();
+    }
+
+    @Test
+    void eventArrivingForATransferThatDoesNotExistAtAllStillThrows() {
+        // Distinct from the CREATED case above: if the row itself isn't visible yet
+        // (e.g. persistCreated hasn't committed), findById returns empty and the
+        // listener still has nothing to link -- this is the one case that legitimately
+        // needs the retry-via-exception path.
+        String eventId = UUID.randomUUID().toString();
+
         assertThrows(TransferNotYetVisibleException.class, () ->
-                listener.handle(new IncomingEvent(eventId, "ApprovalApproved", "t-created-1")));
+                listener.handle(new IncomingEvent(eventId, "ApprovalApproved", "t-does-not-exist")));
 
         assertThat(processedEvents.existsById(eventId)).isFalse();
-        assertThat(transfers.findById("t-created-1").get().getState()).isEqualTo(TransferState.CREATED);
     }
 
     @Test

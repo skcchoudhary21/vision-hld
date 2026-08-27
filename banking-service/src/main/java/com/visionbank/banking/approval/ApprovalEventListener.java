@@ -7,6 +7,7 @@ import com.visionbank.banking.notification.NotificationClient;
 import com.visionbank.banking.repository.ProcessedEventRepository;
 import com.visionbank.banking.repository.TransferRepository;
 import com.visionbank.banking.service.ReleaseService;
+import com.visionbank.banking.service.TransferPersistenceService;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,13 +20,16 @@ public class ApprovalEventListener {
     private final ProcessedEventRepository processedEvents;
     private final ReleaseService releaseService;
     private final NotificationClient notifications;
+    private final TransferPersistenceService persistenceService;
 
     public ApprovalEventListener(TransferRepository transfers, ProcessedEventRepository processedEvents,
-                                  ReleaseService releaseService, NotificationClient notifications) {
+                                  ReleaseService releaseService, NotificationClient notifications,
+                                  TransferPersistenceService persistenceService) {
         this.transfers = transfers;
         this.processedEvents = processedEvents;
         this.releaseService = releaseService;
         this.notifications = notifications;
+        this.persistenceService = persistenceService;
     }
 
     @Transactional
@@ -42,20 +46,21 @@ public class ApprovalEventListener {
         Transfer transfer = transfers.findById(event.requestId())
                 .orElseThrow(() -> new TransferNotYetVisibleException(event.requestId()));
 
-        if ("ApprovalCreationFailed".equals(event.eventType()) && transfer.getState() == TransferState.CREATED) {
-            setState(transfer, TransferState.FAILED);
-            notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
-                    "Your transfer submission could not be processed. Please contact support or try again.");
-            markProcessed(event.eventId());
-            return;
-        }
-
         if (transfer.getState() == TransferState.CREATED) {
-            // Event beat the local markPendingApproval commit — transient, not stale.
-            // Do NOT mark processed: throwing here rolls back this transaction and the
-            // controller returns non-2xx, so the relay's claim isn't marked published and
-            // it retries in the next poll, by which point the link should exist.
-            throw new TransferNotYetVisibleException(event.requestId());
+            if ("ApprovalCreationFailed".equals(event.eventType())) {
+                setState(transfer, TransferState.FAILED);
+                notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
+                        "Your transfer submission could not be processed. Please contact support or try again.");
+                markProcessed(event.eventId());
+                return;
+            }
+            // Any other event type is the workflow-creation signal itself (ApprovalSubmitted,
+            // always written first in ApprovalCommandService.doCreate()) or, in principle, a
+            // later event that outran it -- either way, this is the first proof banking-service
+            // has that the workflow exists. Link now; the guarded UPDATE this mirrors on
+            // approval-engine's side has no equivalent here since there's only one row to update,
+            // not a race between callers.
+            persistenceService.markPendingApproval(transfer.getTransferId(), event.requestId());
         }
 
         if (transfer.getState() == TransferState.PENDING_APPROVAL) {
@@ -76,7 +81,7 @@ public class ApprovalEventListener {
                     notifications.notifyMaker(transfer.getMakerId(), transfer.getTransferId(),
                             "Your transfer expired without a decision within the approval SLA.");
                 }
-                case "ApprovalSubmitted" -> { /* no-op — transfer already PENDING_APPROVAL */ }
+                case "ApprovalSubmitted" -> { /* the linking event itself (handled above), or a harmless redelivery of it after already linked */ }
                 default -> { /* unknown event type — ignore rather than fail the whole delivery */ }
             }
         }
