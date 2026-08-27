@@ -19,12 +19,20 @@ export function RequestDetailPage() {
   const [snack, setSnack] = useState<{ severity: 'success' | 'error'; message: string } | null>(null);
 
   const load = useCallback(async () => {
-    const [v, a] = await Promise.all([
-      approvalsApi.workflowView(id),
-      approvalsApi.audit(id),
-    ]);
-    setView(v);
-    setAudit(a);
+    try {
+      const [v, a] = await Promise.all([
+        approvalsApi.workflowView(id),
+        approvalsApi.audit(id),
+      ]);
+      setView(v);
+      setAudit(a);
+    } catch {
+      // The approval workflow doesn't exist yet. Submission is asynchronous
+      // (banking-service publishes to Redis; approval-engine's consumer creates
+      // the workflow moments later) -- landing here before that consumer has
+      // run is expected, not an error. The polling effect below retries until
+      // it appears.
+    }
     // Whether a Transfer record exists is a question for banking-service, not
     // something inferable from the workflow's name: policy config can route a
     // transfer's amount to ANY workflow (including a non-"transfer-*"-named
@@ -38,6 +46,18 @@ export function RequestDetailPage() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Keep polling while there's nothing to show yet, or the workflow hasn't
+  // reached a terminal state -- there is no push mechanism (SSE exists in
+  // UiController but nothing in this app subscribes to it: EventSource can't
+  // carry the X-Actor-Id/X-Actor-Role headers every other endpoint requires,
+  // so plain polling reuses the same authenticated request() helper instead
+  // of carving out a header-auth exception for one endpoint).
+  useEffect(() => {
+    if (view && view.terminalStates.includes(view.currentState)) return;
+    const interval = setInterval(load, 1500);
+    return () => clearInterval(interval);
+  }, [load, view]);
 
   async function act(actionName: 'approve' | 'reject' | 'cancel') {
     setActing(actionName);
@@ -53,7 +73,14 @@ export function RequestDetailPage() {
   }
 
   if (!view) {
-    return <Box sx={{ p: 6, textAlign: 'center' }}><CircularProgress /></Box>;
+    return (
+      <Box sx={{ p: 6, textAlign: 'center' }}>
+        <CircularProgress />
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
+          Processing your request...
+        </Typography>
+      </Box>
+    );
   }
 
   // Only human-initiated decisions get a button. "expire" fires on its own

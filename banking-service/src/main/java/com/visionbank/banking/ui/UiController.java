@@ -22,7 +22,7 @@ import java.util.UUID;
 @RequestMapping("/ui-api")
 public class UiController {
 
-    private static final Set<String> TERMINAL_STATES = Set.of("RELEASED", "REJECTED", "CANCELLED", "EXPIRED");
+    private static final Set<String> TERMINAL_STATES = Set.of("RELEASED", "REJECTED", "CANCELLED", "EXPIRED", "FAILED");
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(1);
     private static final Duration STREAM_TIMEOUT = Duration.ofMinutes(10);
 

@@ -1,6 +1,6 @@
 export type TransferState =
   | 'CREATED' | 'PENDING_APPROVAL' | 'RELEASE_PENDING' | 'RELEASED'
-  | 'REJECTED' | 'CANCELLED' | 'EXPIRED';
+  | 'REJECTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
 
 export interface TransferDetail {
   transferId: string;
