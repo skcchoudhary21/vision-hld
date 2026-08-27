@@ -24,19 +24,24 @@ Definitions below).
 ```mermaid
 stateDiagram-v2
     [*] --> CREATED
-    CREATED --> VALIDATED
-    VALIDATED --> REJECTED: validation failure
-    VALIDATED --> WAITING_FOR_APPROVAL
-    WAITING_FOR_APPROVAL --> RELEASE_PENDING: ApprovalApproved
-    WAITING_FOR_APPROVAL --> REJECTED: ApprovalRejected
-    WAITING_FOR_APPROVAL --> CANCELLED: ApprovalCancelled
-    WAITING_FOR_APPROVAL --> EXPIRED: ApprovalExpired
+    CREATED --> PENDING_APPROVAL: ApprovalSubmitted (workflow created)
+    CREATED --> FAILED: ApprovalCreationFailed (SubmissionCommandReconciler gave up)
+    FAILED --> PENDING_APPROVAL: resumed submission links a newly-created workflow
+    PENDING_APPROVAL --> RELEASE_PENDING: ApprovalApproved
+    PENDING_APPROVAL --> REJECTED: ApprovalRejected
+    PENDING_APPROVAL --> CANCELLED: ApprovalCancelled
+    PENDING_APPROVAL --> EXPIRED: ApprovalExpired
     RELEASE_PENDING --> RELEASED: core banking confirms
 ```
 
-`WAITING_FOR_APPROVAL` mirrors the engine's `PENDING_APPROVAL` but is not shared state —
+`PENDING_APPROVAL` mirrors the engine's own `PENDING_APPROVAL` but is not shared state --
 each event applies only if Transfer is still in the expected state (a lost race is a logged
-no-op). No `RELEASE_FAILED`: a transient core-banking failure retries in place.
+no-op). `CREATED` is the brief async window between `POST /transfers` returning and its
+creation command being consumed off `stream:transfer-approval-create` (see Redis Stream
+Delivery below). `FAILED` is not necessarily terminal: resuming with the same
+`Idempotency-Key` (`TransferSubmissionService.resumeIfNeeded`) republishes the creation
+command, and `ApprovalEventListener` links the resulting workflow exactly as it would from
+`CREATED`. No `RELEASE_FAILED`: a transient core-banking failure retries in place.
 
 ## Workflow Definitions (one fixed-shape YAML per tier, not guard-branching in one workflow)
 
@@ -66,10 +71,14 @@ workflowVersion}` (404 `POLICY_RULE_NOT_FOUND` if none covers it). Seeded once f
 `application.yml`'s ceiling values (AED 5,000 / 50,000 minor units) into the three transfer
 tiers; editable afterward via `PUT /policy-rules`, no redeploy.
 
-Banking's `PolicyResolver` only resolves *which workflow* — required-approvals count and
-eligible role aren't a separate policy object on the wire; they're the resolved workflow's own
-`approve` transition (`requiredApprovals`, `allowedRoles`), frozen into `policy_snapshot`
-(embeds the full `WorkflowDefinition`) at creation and never re-resolved.
+Policy resolution now happens in-process inside Approval Engine's `SubmissionCommandConsumer`
+(via `PolicyRuleResolutionService`) when it consumes the creation command off
+`stream:transfer-approval-create` — not a synchronous call out of Banking Service. Banking's
+`PolicyResolver`/`ApprovalEngineClient.resolvePolicy()` classes still exist in source but have
+zero callers (dead code, left in place). Required-approvals count and eligible role aren't a
+separate policy object on the wire; they're the resolved workflow's own `approve` transition
+(`requiredApprovals`, `allowedRoles`), frozen into `policy_snapshot` (embeds the full
+`WorkflowDefinition`) at creation and never re-resolved.
 
 ## API Contracts
 
@@ -114,17 +123,18 @@ actor_id, state)`)
 | `NOT_FOUND` / `WORKFLOW_NOT_FOUND` / `POLICY_RULE_NOT_FOUND` | 404 | Unknown request / workflow / no policy rule covers the amount |
 | `INVALID_REQUEST` | 400 | e.g. `mine=true` without `X-Actor-Role` |
 
-**`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call.
+**`POST /transfers`** (Banking; header `Idempotency-Key`) — creates and submits in one call;
+submission itself is asynchronous (see Redis Stream Delivery below), so the response reflects
+only that the row was created, not that a workflow exists yet.
 ```json
 // Request
 { "makerId": "maker-1", "fromAccount": "ACC-1", "toAccount": "ACC-2",
   "amountMinorUnits": 500000, "currency": "USD" }
 // 200 Response
-{ "transferId": "abc123", "state": "WAITING_FOR_APPROVAL" }
+{ "transferId": "abc123", "state": "CREATED" }
 ```
-`GET /transfers/{id}` returns `TransferResponseDto`. Internal webhook `POST /internal/events`
-(`X-Event-Id`, `X-Event-Type` headers; body `{"requestId": "..."}`) is the relay's delivery
-endpoint, not client-facing.
+`GET /transfers/{id}` returns `TransferResponseDto`; poll it to observe `state` progress past
+`CREATED` once the creation command is consumed off `stream:transfer-approval-create`.
 
 ## Data Model
 
@@ -157,16 +167,22 @@ processed_event(event_id PK, processed_at)
 ```mermaid
 sequenceDiagram
     participant T as Banking Service
+    participant Rd1 as stream:transfer-approval-create
     participant E as Approval Engine
     participant R as Outbox Relay
-    T->>E: GET /policy-rules/resolve?amountMinorUnits=... -> transfer-auto-release:1
-    T->>E: POST /approvals (Idempotency-Key, workflowId=transfer-auto-release)
-    E->>E: only transition from SUBMITTED is unconditional -> APPROVED
+    participant Rd2 as stream:approval-lifecycle-events
+    T->>T: persistCreated() -> CREATED, returns immediately
+    T->>Rd1: XADD (transferId, makerId, amount, expiresAt)
+    Rd1->>E: XREADGROUP (SubmissionCommandConsumer)
+    E->>E: resolve(amount) -> transfer-auto-release:1 (in-process, PolicyRuleResolutionService)
+    E->>E: ApprovalCommandService.create(): only transition from SUBMITTED is unconditional -> APPROVED
     E->>E: commit: state + audit + outbox(ApprovalSubmitted, ApprovalApproved)
-    E-->>T: 200 { state: APPROVED }
+    E->>Rd1: XACK
     R->>E: poll: claim unpublished (FOR UPDATE SKIP LOCKED)
-    R->>T: POST /internal/events (ApprovalApproved)
-    T->>T: dedupe by event_id, release() -> RELEASE_PENDING -> RELEASED
+    R->>Rd2: XADD (ApprovalSubmitted), XADD (ApprovalApproved)
+    Rd2->>T: XREADGROUP (LifecycleEventConsumer)
+    T->>T: dedupe by event_id, ApprovalEventListener.handle():\nlink CREATED->PENDING_APPROVAL, then release() -> RELEASE_PENDING -> RELEASED
+    T->>Rd2: XACK
 ```
 
 **Multi-approver — the race diagram** (Checker A, Checker B approve concurrently, `required=1`;
@@ -225,14 +241,43 @@ re-reading current state then classifies the failure: `409 CONCURRENT_STATE_CHAN
 legal predecessor, `409 INVALID_STATE_TRANSITION` if it could never have led here. Quorum
 counting additionally takes a `SELECT ... FOR UPDATE` row lock (`ApprovalCommandService.
 loadOrThrow`) — a deliberate exception to "no explicit locks," since counting committed
-decisions is an aggregate read the guarded UPDATE alone can't protect. Evidence:
+decisions is an aggregate read the guarded UPDATE alone can't protect: without it, two
+checkers can each count only their own still-uncommitted vote, both see quorum unmet, and a
+request that actually has enough approvals is stranded in `PENDING_APPROVAL` forever. Evidence:
 `ApprovalConcurrencyTest`, `ExpiryVersusApproveConcurrencyTest`.
+
+**Why a lock, not a lock-free alternative:** considered and rejected for this contention shape
+(at most `requiredApprovals` actors, one row, a millisecond-scale critical section):
+*atomic counter column* (`UPDATE ... SET approvals_count = approvals_count + 1 RETURNING`) drops
+the explicit lock but denormalizes the count against `approval_decision` as a second source of
+truth that can drift; *`SERIALIZABLE` isolation + retry* trades a short wait for a full
+abort-and-redo plus retry code, for contention this shallow; *splitting "record vote" from
+"evaluate quorum" into two transactions* (the outbox philosophy used elsewhere here) closes the
+race without a lock but turns a synchronous decision eventually-consistent for no real gain at
+this scale. A `PESSIMISTIC_WRITE` held for one short cycle, on one row, contended by a handful
+of actors, is the simplest option that's actually correct.
+
+## Redis Stream Delivery
+
+Two streams, one consumer group each: `stream:transfer-approval-create` (`approval-engine-workers`)
+and `stream:approval-lifecycle-events` (`banking-service-workers`). Both are at-least-once —
+a message stays in the group's pending-entries list until `XACK`'d; `SubmissionCommandReconciler`
+/ `LifecycleEventReconciler` reclaim anything idle past 30s via `XPENDING` + `XCLAIM` (the Redis-native
+equivalent of `OutboxClaimService`'s `claimed_at` staleness window) and retry it. The submission
+side additionally gives up after 3 delivery attempts, publishing `ApprovalCreationFailed` onto
+the lifecycle stream so banking-service can move the transfer to `FAILED` and notify the maker —
+the lifecycle side has no equivalent failure state to move to, so it logs loudly past 5 attempts
+rather than silently dropping the message (a full dead-letter mechanism is out of scope).
+
+Redelivery is safe everywhere it can happen because every consumer here was already idempotent
+before Redis existed: `ApprovalCommandService.create()` by `(Idempotency-Key, body hash)`,
+`ApprovalEventListener.handle()` by `processed_event.event_id`.
 
 ## Failure Semantics
 
 | Failure | Behavior |
 |---|---|
-| Engine unreachable during `submit()` | Fails synchronously; retry with same `Idempotency-Key` |
+| Engine unreachable during `submit()` | Transfer still reaches `CREATED` immediately; the creation command persists in `stream:transfer-approval-create` and `SubmissionCommandReconciler` retries it until Engine comes back, giving up only after `MAX_DELIVERY_ATTEMPTS` (3) — at which point the transfer moves to `FAILED` and the maker is notified |
 | Banking Service unreachable during approve/reject/cancel | Engine still transitions/audits; only delivery delays |
 | Relay crashes mid-publish | Row stays `claimed_at`-set; reclaimed after 30s |
 | Duplicate event delivery | `processed_event(event_id)` dedupe — no-op replay |

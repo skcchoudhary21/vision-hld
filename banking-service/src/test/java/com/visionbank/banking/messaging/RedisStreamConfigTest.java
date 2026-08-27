@@ -1,8 +1,5 @@
-package com.visionbank.approval.service;
+package com.visionbank.banking.messaging;
 
-import com.visionbank.approval.messaging.RedisStreamNames;
-import com.visionbank.approval.domain.OutboxEvent;
-import com.visionbank.approval.repository.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,13 +13,13 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-import java.time.Instant;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 @SpringBootTest
-class OutboxRelayTest {
+class RedisStreamConfigTest {
 
     @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -33,36 +30,23 @@ class OutboxRelayTest {
 
     @DynamicPropertySource
     static void props(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", () -> postgres.getJdbcUrl() + "&stringtype=unspecified");
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
     }
 
-    @Autowired OutboxRelay relay;
-    @Autowired OutboxEventRepository outbox;
     @Autowired StringRedisTemplate redisTemplate;
 
-    private OutboxEvent unpublishedEvent(String requestId) {
-        OutboxEvent event = new OutboxEvent();
-        event.setRequestId(requestId);
-        event.setEventType("ApprovalApproved");
-        event.setEventVersion(1);
-        event.setPayload("{\"requestId\":\"" + requestId + "\"}");
-        event.setCreatedAt(Instant.now());
-        return outbox.save(event);
-    }
-
     @Test
-    void publishesUnpublishedEventToRedisAndMarksItPublished() {
-        OutboxEvent event = unpublishedEvent("relay-1");
+    void canWriteAndReadARecordFromAStream() {
+        String streamKey = "stream:smoke-test";
+        redisTemplate.opsForStream().add(streamKey, Map.of("hello", "world"));
 
-        int published = relay.relayOnce();
+        var records = redisTemplate.opsForStream().read(StreamOffset.fromStart(streamKey));
 
-        assertThat(published).isGreaterThanOrEqualTo(1);
-        var records = redisTemplate.opsForStream().read(StreamOffset.fromStart(RedisStreamNames.LIFECYCLE_EVENT_STREAM));
-        assertThat(records).anyMatch(r -> "relay-1".equals(r.getValue().get("requestId")));
-        assertThat(outbox.findById(event.getEventId()).get().getPublishedAt()).isNotNull();
+        assertThat(records).hasSize(1);
+        assertThat(records.get(0).getValue()).containsEntry("hello", "world");
     }
 }

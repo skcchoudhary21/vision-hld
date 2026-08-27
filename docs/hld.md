@@ -5,8 +5,9 @@
 Two independently deployable services, hard ownership split: **Banking Service owns what a
 transfer means** (validation, release orchestration); **Approval Engine owns how an approval
 progresses** (workflow catalog, policy rules, state, concurrency, audit, expiry). Neither writes
-the other's database — they coordinate over sync REST commands and an async outbox for
-lifecycle events.
+the other's database — they coordinate asynchronously over two Redis Streams (submission and
+lifecycle events), plus a synchronous `/ui-api` read-proxy and a synchronous core-banking
+release call.
 
 ## Context / Deployment
 
@@ -17,9 +18,10 @@ and the two Spring Boot services.
 flowchart LR
     User["Corporate banking user"] -->|"REST"| TS["Banking Service :8080"]
     UI["Approval Console UI\n(React SPA, :3000)"] -->|"REST (own origin, CORS)"| TS
-    TS -->|"GET /policy-rules/resolve (sync)"| AE["Approval Engine :8081"]
-    TS -->|"POST /approvals (sync, Idempotency-Key)"| AE
-    AE -.->|"outbox relay: POST /internal/events (async, at-least-once)"| TS
+    TS -->|"XADD stream:transfer-approval-create (async)"| REDIS[("Redis Streams")]
+    REDIS -->|"consumer group"| AE["Approval Engine :8081"]
+    AE -->|"XADD stream:approval-lifecycle-events (async)"| REDIS
+    REDIS -->|"consumer group"| TS
     TS -->|"REST (validate, release)"| CB["CoreBankingClient\n(stub, in-process)"]
     TS --> TDB[("transfer DB")]
     AE --> ADB[("approval DB")]
@@ -48,8 +50,11 @@ service — omitted here; doesn't change the ownership or consistency model.
 pattern deliberately.
 
 Policy lives entirely in Approval Engine as an editable `policy_rule` table (amount range →
-`workflowId`/`workflowVersion`) — Banking's `PolicyResolver` is a thin HTTP call to `GET
-/policy-rules/resolve`. Required-approvals count and eligible role are attributes of the
+`workflowId`/`workflowVersion`), resolved in-process inside `SubmissionCommandConsumer` (via
+`PolicyRuleResolutionService`) when it consumes the creation command off the Redis stream —
+Banking Service no longer calls out to resolve it (its `PolicyResolver`/
+`ApprovalEngineClient.resolvePolicy()` classes still exist in source but have zero callers).
+Required-approvals count and eligible role are attributes of the
 resolved workflow's own `approve` transition, not a separate policy object — one source of
 truth, in the service that already owns the workflow catalog those rules route to.
 
@@ -58,16 +63,21 @@ truth, in the service that already owns the workflow catalog those rules route t
 | Flow | Pattern | If unavailable |
 |---|---|---|
 | Client → Banking | REST sync | Fails fast, retryable |
-| Banking → Engine (policy resolve) | REST sync | Fails fast; submission never starts a workflow un-costed |
-| Banking → Engine (create) | REST sync + `Idempotency-Key` | Retry same key, no duplicate workflow |
-| Engine → Banking (lifecycle events) | Outbox + polling relay | Event durable in DB, relay retries |
+| Banking → Engine (submission) | Redis Stream, at-least-once | Message persists in Redis; `POST /transfers` never blocks on Engine's availability |
+| Engine → Banking (lifecycle events) | Redis Stream, at-least-once | Message persists in Redis; reclaimed via `XPENDING` + `XCLAIM` if a consumer crashes mid-handling |
 | Banking → Core Banking (release) | REST sync, idempotent by `transferId` | Stays `RELEASE_PENDING`, retried |
 
 **Consistency:** strong/transactional within each service; **eventually consistent across the
 boundary** — no distributed transaction, outbox is the seam that makes partial failure safe.
-Resilience is asymmetric by design: Engine down breaks `submit()` synchronously (blocking call
-on the critical path); Banking down does **not** break approve/reject/cancel — the engine's
-state machine never depends on Banking's reachability, only async delivery does.
+Resilience is now symmetric in both directions, since both submission and lifecycle
+notification go through Redis Streams: Engine being down does not break `submit()` — a
+transfer always reaches `CREATED` immediately, and the workflow-creation command retries
+against Redis until Engine comes back, giving up only after `SubmissionCommandReconciler`'s
+delivery-attempt ceiling (see LLD's Redis Stream Delivery section), at which point the
+transfer moves to `FAILED` (itself resumable — see LLD's Transfer Release Lifecycle) and the
+maker is notified. Banking being down likewise does not break approve/reject/cancel — the
+engine's state machine never depends on Banking's reachability, only lifecycle-event delivery
+does, and that too persists in Redis until Banking comes back.
 
 ## NFRs
 

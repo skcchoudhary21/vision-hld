@@ -1,13 +1,10 @@
-package com.visionbank.approval.service;
+package com.visionbank.approval.messaging;
 
-import com.visionbank.approval.messaging.RedisStreamNames;
-import com.visionbank.approval.domain.OutboxEvent;
-import com.visionbank.approval.repository.OutboxEventRepository;
+import com.visionbank.approval.repository.ApprovalRequestRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -16,13 +13,17 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 @Testcontainers
 @SpringBootTest
-class OutboxRelayTest {
+class SubmissionCommandConsumerTest {
 
     @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -40,29 +41,19 @@ class OutboxRelayTest {
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
     }
 
-    @Autowired OutboxRelay relay;
-    @Autowired OutboxEventRepository outbox;
     @Autowired StringRedisTemplate redisTemplate;
-
-    private OutboxEvent unpublishedEvent(String requestId) {
-        OutboxEvent event = new OutboxEvent();
-        event.setRequestId(requestId);
-        event.setEventType("ApprovalApproved");
-        event.setEventVersion(1);
-        event.setPayload("{\"requestId\":\"" + requestId + "\"}");
-        event.setCreatedAt(Instant.now());
-        return outbox.save(event);
-    }
+    @Autowired ApprovalRequestRepository requests;
 
     @Test
-    void publishesUnpublishedEventToRedisAndMarksItPublished() {
-        OutboxEvent event = unpublishedEvent("relay-1");
+    void aPublishedCommandEventuallyCreatesAnApprovalRequest() {
+        String transferId = UUID.randomUUID().toString();
+        redisTemplate.opsForStream().add(RedisStreamNames.SUBMISSION_COMMAND_STREAM, Map.of(
+                "transferId", transferId,
+                "makerId", "maker-1",
+                "amountMinorUnits", "100000",
+                "expiresAt", Instant.now().plusSeconds(300).toString()));
 
-        int published = relay.relayOnce();
-
-        assertThat(published).isGreaterThanOrEqualTo(1);
-        var records = redisTemplate.opsForStream().read(StreamOffset.fromStart(RedisStreamNames.LIFECYCLE_EVENT_STREAM));
-        assertThat(records).anyMatch(r -> "relay-1".equals(r.getValue().get("requestId")));
-        assertThat(outbox.findById(event.getEventId()).get().getPublishedAt()).isNotNull();
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(requests.findByRequestId(transferId)).isPresent());
     }
 }

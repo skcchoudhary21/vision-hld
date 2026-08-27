@@ -8,6 +8,7 @@ const COLOR_MAP: Record<string, { bg: string; color: string }> = {
   RELEASED: { bg: '#dcfce7', color: '#166534' },
   COMPLETED: { bg: '#dcfce7', color: '#166534' },
   REJECTED: { bg: '#fee2e2', color: '#991b1b' },
+  FAILED: { bg: '#fee2e2', color: '#991b1b' },
   CANCELLED: { bg: '#f3f4f6', color: '#6b7280' },
   EXPIRED: { bg: '#f3f4f6', color: '#6b7280' },
 };

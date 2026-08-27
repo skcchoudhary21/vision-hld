@@ -29,12 +29,18 @@ curl -X POST http://localhost:8080/transfers \
   -H "X-Actor-Id: maker-1" -H "X-Actor-Role: MAKER" \
   -d '{"makerId":"maker-1","fromAccount":"ACC-FUNDED","toAccount":"ACC-DEST","amountMinorUnits":100000,"currency":"AED"}'
 ```
+Expected immediate response: `{"transferId": "...", "state": "CREATED"}` —
+submission is asynchronous now, so poll `GET /transfers/{id}` (with the same
+`X-Actor-Id`/`X-Actor-Role` headers) to observe the subsequent state
+(`PENDING_APPROVAL` or `RELEASED`), typically within a couple seconds.
+
 Amounts under 5,000.00 auto-release; 5,000–50,000 need 1 checker; 50,000+
 need 2. These are rows in Approval Engine's `policy_rule` table (seeded from
 `approval-engine`'s `application.yml`, editable at runtime via
-`PUT /policy-rules`), not a hardcoded rule in Banking Service — Banking's
-`PolicyResolver` just calls `GET /policy-rules/resolve` and gets back which
-workflow to instantiate.
+`PUT /policy-rules`), not a hardcoded rule in Banking Service. Resolution now
+happens in-process inside approval-engine's `SubmissionCommandConsumer` (via
+`PolicyRuleResolutionService`) when it consumes the creation command off the
+Redis stream — not a synchronous call out of Banking Service.
 
 Run each service's tests independently:
 ```bash
@@ -47,9 +53,16 @@ cd banking-service && ./gradlew test
 - Two independent Spring Boot apps (Java 21, Spring Boot 4.1.x), one Postgres
   DB each — Transfer Domain owns what a transfer means, Approval Engine owns
   how an approval progresses.
-- No message broker: lifecycle events move through a DB-backed transactional
-  outbox, relayed via polling HTTP push, with idempotent consumption on the
-  receiving side (`processed_event`).
+- Submission (banking-service → approval-engine) and lifecycle notification
+  (approval-engine → banking-service) both go through Redis Streams
+  (`stream:transfer-approval-create`, `stream:approval-lifecycle-events`),
+  each with one consumer group. `POST /transfers` now returns `CREATED`
+  immediately — the workflow link happens asynchronously, typically within
+  a couple seconds. At-least-once delivery (a message stays pending until
+  acknowledged, reclaimable via `XPENDING` + `XCLAIM` after 30s) is safe here
+  because every consumer is already idempotent: `ApprovalCommandService.
+  create()` by `Idempotency-Key`+body-hash, `ApprovalEventListener.handle()`
+  by `processed_event.event_id`.
 - Every competing state transition — two checkers approving at once, a maker
   cancelling while a checker approves, an SLA expiry racing an approval —
   goes through one mechanism: a single guarded conditional `UPDATE ... WHERE

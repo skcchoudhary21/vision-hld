@@ -1,8 +1,5 @@
-package com.visionbank.approval.service;
+package com.visionbank.approval.messaging;
 
-import com.visionbank.approval.messaging.RedisStreamNames;
-import com.visionbank.approval.domain.OutboxEvent;
-import com.visionbank.approval.repository.OutboxEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -16,13 +13,11 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
-import java.time.Instant;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 @SpringBootTest
-class OutboxRelayTest {
+class LifecycleEventPublisherTest {
 
     @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
@@ -40,29 +35,21 @@ class OutboxRelayTest {
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
     }
 
-    @Autowired OutboxRelay relay;
-    @Autowired OutboxEventRepository outbox;
+    @Autowired LifecycleEventPublisher publisher;
     @Autowired StringRedisTemplate redisTemplate;
 
-    private OutboxEvent unpublishedEvent(String requestId) {
-        OutboxEvent event = new OutboxEvent();
-        event.setRequestId(requestId);
-        event.setEventType("ApprovalApproved");
-        event.setEventVersion(1);
-        event.setPayload("{\"requestId\":\"" + requestId + "\"}");
-        event.setCreatedAt(Instant.now());
-        return outbox.save(event);
-    }
-
     @Test
-    void publishesUnpublishedEventToRedisAndMarksItPublished() {
-        OutboxEvent event = unpublishedEvent("relay-1");
+    void publishAddsARecordToTheLifecycleEventStream() {
+        ApprovalEvent event = new ApprovalEvent("evt-1", "ApprovalApproved", "req-1", "{\"requestId\":\"req-1\"}");
 
-        int published = relay.relayOnce();
+        publisher.publish(event);
 
-        assertThat(published).isGreaterThanOrEqualTo(1);
         var records = redisTemplate.opsForStream().read(StreamOffset.fromStart(RedisStreamNames.LIFECYCLE_EVENT_STREAM));
-        assertThat(records).anyMatch(r -> "relay-1".equals(r.getValue().get("requestId")));
-        assertThat(outbox.findById(event.getEventId()).get().getPublishedAt()).isNotNull();
+        assertThat(records).hasSize(1);
+        assertThat(records.get(0).getValue())
+                .containsEntry("eventId", "evt-1")
+                .containsEntry("eventType", "ApprovalApproved")
+                .containsEntry("requestId", "req-1")
+                .containsEntry("payload", "{\"requestId\":\"req-1\"}");
     }
 }

@@ -17,6 +17,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("org.springframework.boot:spring-boot-starter-data-redis")
     implementation("org.yaml:snakeyaml")
     runtimeOnly("org.postgresql:postgresql")
     compileOnly("org.projectlombok:lombok")
@@ -27,6 +28,7 @@ dependencies {
     testImplementation("org.testcontainers:junit-jupiter:1.20.4")
     testImplementation("org.testcontainers:postgresql:1.20.4")
     testImplementation("org.wiremock:wiremock-standalone:3.9.2")
+    testImplementation("org.awaitility:awaitility:4.2.2")
 }
 
 tasks.withType<Test> { useJUnitPlatform() }

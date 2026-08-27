@@ -8,7 +8,10 @@ import com.visionbank.approval.workflow.GuardRegistry;
 import com.visionbank.approval.workflow.Transition;
 import com.visionbank.approval.workflow.WorkflowDefinition;
 import com.visionbank.approval.workflow.WorkflowRegistry;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
@@ -30,12 +33,13 @@ public class ApprovalCommandService {
     private final IdempotencyRecordRepository idempotency;
     private final WorkflowRegistry workflowRegistry;
     private final GuardRegistry guards;
+    private final ApprovalCommandService self; // proxy reference -- see create()/doCreate() below
     private final ObjectMapper mapper = new ObjectMapper();
 
     public ApprovalCommandService(ApprovalRequestRepository requests, ApprovalDecisionRepository decisions,
                                    AuditLogRepository audits, OutboxEventRepository outbox,
                                    IdempotencyRecordRepository idempotency, WorkflowRegistry workflowRegistry,
-                                   GuardRegistry guards) {
+                                   GuardRegistry guards, @Lazy ApprovalCommandService self) {
         this.requests = requests;
         this.decisions = decisions;
         this.audits = audits;
@@ -43,6 +47,7 @@ public class ApprovalCommandService {
         this.idempotency = idempotency;
         this.workflowRegistry = workflowRegistry;
         this.guards = guards;
+        this.self = self;
     }
 
     // Every operation on an EXISTING request reads its own frozen copy -- never the
@@ -55,7 +60,12 @@ public class ApprovalCommandService {
         return transition.allowedRoles().isEmpty() || transition.allowedRoles().contains(actorRole);
     }
 
-    @Transactional
+    // NOT @Transactional here anymore. Each read below is its own implicit
+    // Spring Data JPA transaction; doCreate() below opens its own REQUIRES_NEW
+    // transaction through the `self` proxy. A failure in doCreate() rolls back
+    // only that isolated attempt -- this method is never left holding a
+    // transaction Postgres has already poisoned, so the recovery re-read after
+    // a lost race always runs clean.
     public ApprovalRequestView create(CreateApprovalRequest cmd, String idempotencyKey) {
         String hash = hash(cmd);
         Optional<IdempotencyRecord> existing = idempotency.findById(idempotencyKey);
@@ -68,12 +78,33 @@ public class ApprovalCommandService {
         }
 
         if (requests.findByRequestId(cmd.requestId()).isPresent()) {
-            // Same requestId under a fresh idempotency key would otherwise merge-overwrite the
-            // existing row's state/version/policy_snapshot via JPA's detached-entity save path --
-            // reject rather than silently reset an in-flight or already-decided request.
             throw new IdempotencyConflictException(cmd.requestId());
         }
 
+        try {
+            return self.doCreate(cmd, idempotencyKey, hash);
+        } catch (DataIntegrityViolationException e) {
+            // Lost the race: the other concurrent caller's insert committed first (same
+            // idempotencyKey, same requestId is impossible here since requestId is the PK
+            // on approval_request and idempotencyKey is the PK on idempotency_key -- either
+            // constraint firing means someone else just finished creating this exact request).
+            // doCreate() ran in its own already-rolled-back REQUIRES_NEW transaction, so this
+            // re-read runs in a fresh transaction of its own -- never the poisoned one.
+            Optional<IdempotencyRecord> winner = idempotency.findById(idempotencyKey);
+            if (winner.isPresent()) {
+                ApprovalRequest replayed = requests.findByRequestId(winner.get().getRequestId()).orElseThrow();
+                return toView(replayed);
+            }
+            // idempotencyKey wasn't the constraint that fired -- must have been requestId
+            // (a fresh idempotency key reused for an already-existing requestId, racing with
+            // itself). Same non-recoverable case create() already rejects above; surface it
+            // the same way rather than swallowing it.
+            throw new IdempotencyConflictException(cmd.requestId());
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public ApprovalRequestView doCreate(CreateApprovalRequest cmd, String idempotencyKey, String hash) {
         WorkflowDefinition resolvedWorkflow;
         try {
             resolvedWorkflow = workflowRegistry.get(cmd.workflowId(), cmd.workflowVersion());
@@ -96,11 +127,6 @@ public class ApprovalCommandService {
         request.setVersion(0L);
         request.setState("SUBMITTED");
 
-        // Each workflow's SUBMITTED state now has exactly one outgoing transition (spec
-        // §3.5 -- quorum is fixed per workflow version, so there's nothing left to branch
-        // on per-request). Still evaluated generically via guards -- an empty guards list
-        // always passes -- so a future workflow that DOES want conditional routing on
-        // something guard-worthy (not required-approvals-count) still works unmodified.
         GuardContext ctx = new GuardContext(cmd.makerId(), 0, null, null, false, "SUBMITTED", null);
         Transition initial = resolvedWorkflow.transitionsFrom("SUBMITTED").stream()
                 .filter(t -> t.guards().stream().allMatch(g -> guards.get(g).evaluate(ctx)))
@@ -124,6 +150,8 @@ public class ApprovalCommandService {
         record.setResult("{\"state\":\"" + initial.to() + "\"}");
         record.setCreatedAt(Instant.now());
         idempotency.save(record);
+        requests.flush(); // force the constraint violation to surface HERE, inside this try, not on transaction commit after the method returns
+        idempotency.flush();
 
         return toView(request);
     }

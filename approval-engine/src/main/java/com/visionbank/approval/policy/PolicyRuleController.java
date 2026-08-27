@@ -10,9 +10,11 @@ import java.util.List;
 public class PolicyRuleController {
 
     private final PolicyRuleRepository rules;
+    private final PolicyRuleResolutionService resolutionService;
 
-    public PolicyRuleController(PolicyRuleRepository rules) {
+    public PolicyRuleController(PolicyRuleRepository rules, PolicyRuleResolutionService resolutionService) {
         this.rules = rules;
+        this.resolutionService = resolutionService;
     }
 
     @GetMapping
@@ -30,16 +32,9 @@ public class PolicyRuleController {
         return saved.stream().map(this::toDto).toList();
     }
 
-    // Server-side resolution, not just the raw rule list, so the
-    // first-match-wins logic lives in exactly one place (here, alongside the
-    // rules themselves) rather than being re-implemented by every caller.
     @GetMapping("/resolve")
     public PolicyResolutionDto resolve(@RequestParam long amountMinorUnits) {
-        return rules.findAllByOrderByMinAmountMinorUnitsAsc().stream()
-                .filter(r -> r.covers(amountMinorUnits))
-                .findFirst()
-                .map(r -> new PolicyResolutionDto(r.getWorkflowId(), r.getWorkflowVersion()))
-                .orElseThrow(() -> new PolicyRuleNotFoundException(amountMinorUnits));
+        return resolutionService.resolve(amountMinorUnits);
     }
 
     private PolicyRuleDto toDto(PolicyRule r) {
