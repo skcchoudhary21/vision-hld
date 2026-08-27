@@ -13,6 +13,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
 import java.util.UUID;
+import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -102,5 +103,34 @@ class ApprovalCommandServiceCreateTest {
     void unknownWorkflowIdRejectedAtCreation() {
         assertThatThrownBy(() -> service.create(cmd("bad-workflow-1", "does-not-exist"), UUID.randomUUID().toString()))
                 .isInstanceOf(InvalidRequestException.class);
+    }
+
+    @Test
+    void concurrentCreateWithSameIdempotencyKeyNeverThrowsRawConstraintViolation() throws Exception {
+        String idemKey = UUID.randomUUID().toString();
+        CreateApprovalRequest cmd = new CreateApprovalRequest("req-race", "TRANSFER_APPROVAL", "maker-1",
+                "transfer-single-checker", 1, "v1", "{}", Instant.now().plusSeconds(86400));
+
+        CountDownLatch startGate = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        Callable<Object> attempt = () -> {
+            startGate.await();
+            try {
+                return service.create(cmd, idemKey);
+            } catch (Exception e) {
+                return e;
+            }
+        };
+        Future<Object> a = pool.submit(attempt);
+        Future<Object> b = pool.submit(attempt);
+        startGate.countDown();
+
+        Object resultA = a.get(10, TimeUnit.SECONDS);
+        Object resultB = b.get(10, TimeUnit.SECONDS);
+        pool.shutdown();
+
+        assertThat(resultA).isInstanceOf(ApprovalRequestView.class);
+        assertThat(resultB).isInstanceOf(ApprovalRequestView.class);
+        assertThat(((ApprovalRequestView) resultA).requestId()).isEqualTo(((ApprovalRequestView) resultB).requestId());
     }
 }
