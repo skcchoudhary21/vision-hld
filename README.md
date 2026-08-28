@@ -16,6 +16,17 @@ differently-shaped workflow (`privileged-access`, a 3-stage security → manager
 running through the same engine with zero code changes, and it's now the live routing target for the
 bank's highest-value transfers, not just a test in isolation.
 
+### Two independent lifecycles
+
+```text
+Approval Engine:  SUBMITTED → (workflow's own review stages) → APPROVED
+Banking:          CREATED → PENDING_APPROVAL → RELEASE_PENDING → RELEASED
+```
+
+`APPROVED` means the approval requirement is satisfied; `RELEASED` means Core Banking has confirmed
+the transfer. Neither service reads the other's state — only the event on the boundary between them
+crosses, and only after `APPROVED` is reached.
+
 ## Repository structure
 
 ```text
@@ -84,9 +95,10 @@ browser acts as, standing in for real login. Amount decides which path a transfe
    notice your own approve/reject buttons disappear and the card shows "waiting on 1 more" (the server
    would `409` a second decision from the same actor anyway). Switch to checker B and approve →
    `RELEASED`.
-4. **Privileged access (≥ AED 100,000).** This tier skips the transfer workflow entirely and routes into
-   a 3-stage review — security (2 approvals), then manager (1), then compliance (1) — each stage its
-   own role in the actor picker. Walk it stage by stage the same way.
+4. **Privileged access (≥ AED 100,000).** This tier uses a different workflow definition entirely —
+   `privileged-access:2`, a 3-stage review: security (2 approvals), then manager (1), then compliance
+   (1) — each stage its own role in the actor picker. Same engine, no special-casing; walk it stage by
+   stage the same way.
 5. **Reject / cancel** at any pending stage instead of approving, to see the other terminal states —
    cancel is only available to the maker who submitted it, and only on the transfer-shaped workflows
    (privileged-access has no cancel path at all).
@@ -119,7 +131,7 @@ is classified as a clean `409`, never a partial write. Quorum *counting* additio
 `PESSIMISTIC_WRITE` row lock — the one deliberate exception — since tallying committed votes is an
 aggregate read the guarded `UPDATE` alone can't protect.
 
-**Policy chooses the workflow; the workflow defines how it executes.** `policy_rule(min, max,
+**Policy chooses the workflow; the workflow defines how approval progresses.** `policy_rule(min, max,
 workflowId, workflowVersion)` is the only thing Banking's transfer amount ever touches — it has no
 opinion on stages, roles, or quorum. Everything below that line is the resolved workflow's own YAML:
 
@@ -159,44 +171,53 @@ that window.
 | Cross-service event handling | `banking-service/src/main/java/.../approval/ApprovalEventListener.java` |
 | UI | `approval-console-ui/src/` |
 
+## Extending the system
+
+Adding a new workflow — no Approval Engine code change required:
+
+```text
+1. Create a workflow YAML
+2. Give it a new (workflowId, version)
+3. Define its states and transitions
+4. Add allowedRoles / requiredApprovals / guards
+5. Add a policy_rule row pointing to it
+6. Restart — the workflow registry loads at startup
+```
+
+That is literally how `privileged-access` was added — a new YAML file and a policy row, nothing else.
+
 ## What I'd do differently with more time
 
-Ordered by impact — the gaps most likely to cost real money or break the control first, polish last:
+Scoped to **Approval Engine** — this repo's graded focus — not Banking Service or Core Banking (the
+funds-hold gap, a `RELEASE_PENDING` retry scheduler, and real notification delivery are Banking-side
+gaps, covered in `hld.md`'s trade-offs instead). Ordered by impact within that scope:
 
-1. **A funds hold at submission** (`CoreBankingClient.hold(...)`, consumed on release, freed on
-   reject/cancel/expire) — without it, two large concurrent transfers against the same account can each
-   pass validation independently and both later release, overspending the real balance. The one gap
-   named deliberately rather than silently omitted.
-2. **Real authentication** in place of trusting `X-Actor-Id`/`X-Actor-Role` headers — maker-checker
-   segregation is only as strong as the identity behind it, and today that identity is caller-asserted,
-   not verified. OIDC/JWT at the gateway, role claims checked server-side, closes that hole.
-3. **A dead-letter queue** for messages past max delivery attempts — today those just get logged loudly
-   and dropped, so an approval or release event could silently stall with no operational trail.
-4. **A retry scheduler for `RELEASE_PENDING`** — the state already exists for a stuck release, but
-   nothing polls it; it's only safe today because the Core Banking stub never actually fails.
-5. **Flyway migrations** instead of `ddl-auto: update`, plus transactional error handling in the
-   docker-compose Postgres init script (today a failed statement partway through continues silently
-   instead of rolling back or failing loud).
-6. **Rate limiting** per-maker/per-actor at the gateway — distinct from idempotency, which guards
-   correctness, not volume; a runaway retry loop today isn't actually throttled.
-7. **Real notification delivery** behind `NotificationClient` instead of the logging stub.
-8. **A reporting UI over the audit trail** — transfers by state/tier/maker, SLA breaches, per-checker
+1. **Real authentication for the actor identity the engine trusts** — every `allowedRoles`/quorum check
+   is only as strong as `actorId`/`actorRole`, and today those are caller-asserted headers, not verified.
+   OIDC/JWT with role claims checked server-side closes the one hole that undermines maker-checker
+   segregation at its root.
+2. **A dead-letter queue** for the engine's own submission consumer past max delivery attempts — today
+   those just get logged loudly and dropped, so a stuck creation command has no operational trail.
+3. **Flyway migrations** for the approval DB instead of `ddl-auto: update`, so workflow/policy schema
+   changes are versioned and reviewable rather than inferred from entity annotations.
+4. **Rate limiting** per-maker/per-actor on the engine's own endpoints — distinct from idempotency, which
+   guards correctness, not volume; a runaway retry loop today isn't actually throttled.
+5. **A reporting UI over the audit trail** — requests by state/tier/maker, SLA breaches, per-checker
    history — turning `audit_log` into an operational surface, not just a write-only log.
-9. **A workflow authoring UI** — edit stages, roles, quorum, and `policy_rule` ranges as data, instead of
+6. **A workflow authoring UI** — edit stages, roles, quorum, and `policy_rule` ranges as data, instead of
    hand-editing YAML for a new tier.
-10. **A finer-grained concurrency primitive than `PESSIMISTIC_WRITE`** — already correct at this scale,
-    but a monotonic per-stage approval counter or an advisory lock scoped to `request_id` would shrink
-    the held critical section under real load.
-11. **A priority queue** for high-value/`privileged-access` approvals, so time-sensitive money isn't
-    stuck behind a backlog of low-tier auto-releases.
-12. **Physically separate Postgres instances** for the two databases, so "neither service writes the
-    other's DB" is enforced by infrastructure, not just convention.
+7. **A priority queue** for high-value/`privileged-access` approvals, so time-sensitive money isn't stuck
+   behind a backlog of low-tier auto-releases in the same consumer group.
+8. **A finer-grained concurrency primitive than `PESSIMISTIC_WRITE`** — already correct at this scale,
+   but a monotonic per-stage approval counter or an advisory lock scoped to `request_id` would shrink
+   the held critical section under real load.
 
-One documented behavior worth flagging rather than fixing: retrying with the same actor *after their own
-decision already completed quorum* returns `409 CONCURRENT_STATE_CHANGE` rather than replaying the
-decided state (the terminal-state check runs first) — defensible REST behavior, but narrower than the
-idempotency promise as first written, so it's called out here rather than left for a reviewer to
-discover.
+## Known behaviour
+
+Retrying with the same actor *after their own decision already completed quorum* returns
+`409 CONCURRENT_STATE_CHANGE` rather than replaying the decided state (the terminal-state check runs
+first) — defensible REST behavior, but narrower than the idempotency promise as first written. Called
+out here deliberately, rather than left for a reviewer to discover.
 
 ## Full design record
 
