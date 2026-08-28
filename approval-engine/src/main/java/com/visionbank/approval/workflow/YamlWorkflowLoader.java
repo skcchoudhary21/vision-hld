@@ -55,6 +55,11 @@ public class YamlWorkflowLoader implements WorkflowLoader {
         if (!def.hasState(def.initialState())) {
             throw new IllegalStateException("initialState " + def.initialState() + " is not declared in states[]");
         }
+        for (String terminal : def.terminalStates()) {
+            if (!def.hasState(terminal)) {
+                throw new IllegalStateException("terminalStates entry " + terminal + " is not declared in states[]");
+            }
+        }
         Set<String> seenIdentities = new HashSet<>();
         Set<String> statesWithOutgoingTransitions = new HashSet<>();
         for (Transition t : def.transitions()) {

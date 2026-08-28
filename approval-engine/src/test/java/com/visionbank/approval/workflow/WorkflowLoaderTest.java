@@ -60,4 +60,10 @@ class WorkflowLoaderTest {
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> new YamlWorkflowLoader().load("workflow/invalid-zero-required-approvals.yaml"));
     }
+
+    @Test
+    void terminalStateNotDeclaredInStatesFailsFast() {
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> new YamlWorkflowLoader().load("workflow/invalid-terminal-state-not-declared.yaml"));
+    }
 }

@@ -1,0 +1,14 @@
+name: broken-terminal
+version: 1
+initialState: SUBMITTED
+terminalStates: [APPROVED, NONEXISTENT]
+states:
+  - id: SUBMITTED
+    label: Submitted
+  - id: APPROVED
+    label: Approved
+transitions:
+  - name: approve
+    from: SUBMITTED
+    to: APPROVED
+    guards: []

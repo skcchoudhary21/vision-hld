@@ -85,5 +85,20 @@ class PolicyRuleControllerTest {
 
         mockMvc.perform(get("/policy-rules/resolve?amountMinorUnits=1"))
                 .andExpect(status().isNotFound());
+
+        // Appended for the same reason as above: this must run without disturbing table
+        // state other tests depend on, so it has to be the rejecting case -- a rejected
+        // PUT must not touch the table at all.
+        String overlappingBody = mapper.writeValueAsString(List.of(
+                new PolicyRuleDto(null, 0L, 100_000L, "transfer-single-checker", 1),
+                new PolicyRuleDto(null, 50_000L, 200_000L, "transfer-high-value", 1)));
+        mockMvc.perform(put("/policy-rules").contentType("application/json").content(overlappingBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code", is("INVALID_REQUEST")));
+
+        // The rejected PUT above must not have replaced the table.
+        mockMvc.perform(get("/policy-rules/resolve?amountMinorUnits=1500"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.workflowId", is("transfer-single-checker")));
     }
 }
