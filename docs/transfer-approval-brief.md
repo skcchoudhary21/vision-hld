@@ -1,190 +1,218 @@
-# Transfer Approval System — Design Brief
+# Transfer Approval System — Architecture & Design (4-Page Brief)
 
-Vision Bank corporate transfers pass a maker-checker control before release. Two independently deployable services split ownership: **Banking Service** owns what a transfer *means* (submission, validation, release); **Approval Engine** owns how an approval *progresses* (workflow, policy, quorum, audit, expiry). Neither writes the other's database — they coordinate over the network. The mechanism is domain-independent, proven by a second workflow, `privileged-access`, running on the same engine unmodified.
+One combined document, not a shortened HLD followed by a shortened LLD: the goal is that a reviewer
+understands the whole system, the decisions that matter, and the mechanisms that make it correct — in
+four pages. Full detail lives in `hld.md` / `lld.md`; this is deliberately not a summary of either, it's
+the ~10% of both that actually proves the design works.
 
 ---
 
-# HLD
+## 1. Context & Ownership — HLD
 
-## 1. Context & Deployment
+**Core architecture principle.** Vision Bank corporate customers submit domestic transfers that must
+clear maker-checker approval before release. The system separates authorization from execution:
+**Banking Service** owns the transfer lifecycle — submission, validation, release orchestration.
+**Approval Engine** owns the approval lifecycle — policy selection, workflow execution, quorum, audit,
+expiry. **Approval ≠ execution**: the engine only ever decides whether a transfer *may* proceed; Banking
+and Core Banking are the only things that ever move money. The engine is generic — workflow stages,
+transitions, roles, and quorum are configuration, not transfer-specific code — proven by a second,
+unrelated approval domain (`privileged-access`) reusing it with zero engine changes.
 
-One `docker-compose` command runs one Postgres (two DBs), one Redis, and both services. Solid = sync REST; dashed = async Redis Streams.
+**Context**
 
 ![alt text](hld.drawio.svg)
 
-## 2. Service Responsibilities & Data Ownership
+
+Banking and Approval Engine communicate only through Redis Streams; neither writes the other's
+database. Core Banking is a stubbed interface, not a third deployable service.
+
+**Ownership**
 
 | Concern | Owner |
 |---|---|
-| Transfer semantics, validation, duplicate detection | Banking |
-| Policy rules, resolution, snapshot | Approval Engine |
-| Workflow state, guards, quorum, concurrency | Approval Engine |
-| Audit, SLA expiry, outbox | Approval Engine |
-| Release orchestration + idempotency | Banking |
-| Balance/limit authority, money movement | Core Banking (stub) |
-
-Policy is data, not code: an editable `policy_rule` table, resolved in-process on the creation command. Required-approvals and eligible role are attributes of the resolved workflow's `approve` transition — one source of truth.
-
-## 3. Communication Pattern
-
-| Flow | Pattern | If down |
-|---|---|---|
-| Client → Banking | REST sync | Fails fast, retryable |
-| Banking ↔ Engine | Redis Streams, at-least-once (2 streams, 1 consumer group each) | Message persists; reclaimed via `XPENDING`/`XCLAIM` on crash |
-| Banking → Core Banking | REST sync, idempotent by `transferId` | Holds at `RELEASE_PENDING`, retried |
-
-Each hop uses the pattern its failure mode demands. Neither service's uptime gates the other's — at-least-once is safe only because every consumer is already idempotent (§4).
-
-## 4. Non-Functional
-
-**Idempotency.** `Idempotency-Key` on create; `(request_id, actor_id, state)` on decisions; `transferId` on release. This is what makes at-least-once redelivery safe with no second correctness mechanism.
-
-**Consistency.** ACID *within* each service (state + audit + outbox in one transaction); **eventually consistent across the boundary** — no distributed transaction. Either service's downtime only delays the other, never breaks it.
-
-**Partial failure.** A crash between deciding and delivering never loses the decision — only delays discovery. A reconciler on each side closes the gap.
-
-## 5. Trade-offs
-
-| Decision | Why | Revisit when |
-|---|---|---|
-| **Redis Streams**, not Kafka/SQS | Durable at-least-once + consumer groups + crash-recovery is all this needs; one container, single-region volume | Multi-region, event-sourcing, throughput past one node |
-| **Postgres**, both services | One local ACID txn covers state+audit+outbox; `FOR UPDATE` + guarded `UPDATE` is enough | Single-writer becomes a bottleneck (not at this volume) |
-| **Hybrid lock** (OCC + row-lock for tally) | Single-row transitions need no lock; counting votes is read-then-write, needs a stable read | — |
-| **3 idempotency keys**, not one | Each matches its call's real retry identity | — |
-| **No funds hold** pre-release | Second stateful Core-Banking contract beyond time budget — a named gap, not silently absent | First thing to build next; concurrent transfers can overspend |
-
-## 6. Assumptions & Out of Scope
-
-| In scope | Out of scope |
-|---|---|
-| Two services, Postgres, Redis Streams, docker-compose | Managed/clustered broker, real core banking, real auth |
-| REST sync commands, outbox + stream async events | Multi-region, multi-currency, delegation |
-| OCC + row-lock concurrency, audit, expiry | Tenant registry, BPMN/Temporal/Camunda |
-| Idempotent submission/create/release | Funds hold/reservation (named gap, §5) |
-| Editable policy, versioned workflows; live ≥ AED 100,000 tier | Dead-letter queue, real notification channel |
-
-Core banking, notifications, and auth are stubbed. The console forwards trusted `X-Actor-Id`/`X-Actor-Role` headers, standing in for real auth.
+| Transfer semantics, validation | Banking |
+| Policy + workflow + quorum | Approval Engine |
+| Approval state, decisions, audit | Approval Engine |
+| Release orchestration | Banking |
+| Balance / money movement | Core Banking (stub) |
 
 ---
 
-# LLD
+## 2. Policy, Workflow & Lifecycle — HLD + LLD
 
-## 7. Approval State Machine (Engine)
+**Policy → Workflow → Transition** — the one abstraction everything else builds on:
 
-`APPROVED` means the approval requirement is satisfied — not that money has moved. Common shape below; `transfer-auto-release` uses only the top edge, single/high-value only the bottom five.
-
-```mermaid
-stateDiagram-v2
-    [*] --> SUBMITTED
-    SUBMITTED --> APPROVED: auto_approve (transfer-auto-release only)
-    SUBMITTED --> PENDING_APPROVAL: require_approval (single-checker / high-value)
-    PENDING_APPROVAL --> APPROVED: approve [approvals_satisfied, actor_is_not_maker]
-    PENDING_APPROVAL --> REJECTED: reject [allowedRoles: TRANSFER_CHECKER]
-    PENDING_APPROVAL --> CANCELLED: cancel [actor_is_maker]
-    PENDING_APPROVAL --> EXPIRED: expire [sla_expired]
+```text
+Policy       "What workflow applies?"        an amount range -> workflowId:version
+   │
+   ▼
+Workflow     "How does approval progress?"   states + transitions, one YAML per tier
+   │
+   ▼
+Transition   "Who may act, how many,         allowedRoles · requiredApprovals · guards
+              what else must be true?"
 ```
 
-`privileged-access:2` (≥ AED 100,000, the live top tier) replaces the single `PENDING_APPROVAL` with a three-stage chain — same engine, no special-casing. It has no `cancel` edge: a privileged-access request has no maker in the transfer sense to withdraw it.
+Real tiers, seeded in `policy_rule` and editable at runtime, no redeploy:
 
-```mermaid
-stateDiagram-v2
-    [*] --> SUBMITTED
-    SUBMITTED --> SECURITY_REVIEW: submit
-    SECURITY_REVIEW --> MANAGER_APPROVAL: approve [2x SECURITY_CHECKER]
-    MANAGER_APPROVAL --> COMPLIANCE_REVIEW: approve [1x MANAGER_CHECKER]
-    COMPLIANCE_REVIEW --> APPROVED: approve [1x COMPLIANCE_CHECKER]
-    SECURITY_REVIEW --> REJECTED: reject
-    MANAGER_APPROVAL --> REJECTED: reject
-    COMPLIANCE_REVIEW --> REJECTED: reject
-    SECURITY_REVIEW --> EXPIRED: expire [sla_expired]
-    MANAGER_APPROVAL --> EXPIRED: expire [sla_expired]
-    COMPLIANCE_REVIEW --> EXPIRED: expire [sla_expired]
+```text
+< AED 5,000            -> transfer-auto-release:1    (0 approvals)
+AED 5,000 – 49,999.99   -> transfer-single-checker:1  (1 × TRANSFER_CHECKER)
+AED 50,000 – 99,999.99  -> transfer-high-value:1      (2 × TRANSFER_CHECKER)
+>= AED 100,000          -> privileged-access:2        (2×SECURITY, 1×MANAGER, 1×COMPLIANCE)
 ```
 
-Each stage is its own `PENDING_APPROVAL`-equivalent — Transfer's own lifecycle (§8) still only ever sees the generic `PENDING_APPROVAL`, with no visibility into which review stage the engine is on.
+**One real multi-stage workflow** (the live top tier, `privileged-access:2`):
 
-## 8. Transfer Lifecycle (Banking) & Correspondence
-
-`CREATED` is the brief async gap before the creation command is consumed. `FAILED` is resumable via the same `Idempotency-Key`, not terminal. No `RELEASE_FAILED` — a transient core-banking failure retries in place.
-
-```mermaid
-stateDiagram-v2
-    [*] --> CREATED
-    CREATED --> PENDING_APPROVAL: ApprovalSubmitted
-    CREATED --> FAILED: ApprovalCreationFailed
-    FAILED --> PENDING_APPROVAL: resumed (same Idempotency-Key)
-    PENDING_APPROVAL --> RELEASE_PENDING: ApprovalApproved
-    PENDING_APPROVAL --> REJECTED: ApprovalRejected
-    PENDING_APPROVAL --> CANCELLED: ApprovalCancelled
-    PENDING_APPROVAL --> EXPIRED: ApprovalExpired
-    RELEASE_PENDING --> RELEASED: core banking confirms
+```text
+SUBMITTED
+    │
+    ▼
+SECURITY_REVIEW ──approve [2×SECURITY_CHECKER]──▶ MANAGER_APPROVAL
+                                                        │
+                     ┌──────────────────────────────────┘
+                     ▼
+              approve [1×MANAGER_CHECKER]
+                     │
+                     ▼
+             COMPLIANCE_REVIEW ──approve [1×COMPLIANCE_CHECKER]──▶ APPROVED
 ```
 
-The two machines are independent: Transfer only reacts to Engine events, never queries its state — a duplicate/out-of-order delivery is a logged no-op.
+Each transition owns its own eligible role and quorum; a request has no `cancel` path here (unlike the
+transfer-shaped workflows) since a privileged-access request has no maker in the transfer sense to
+withdraw it.
 
-| Engine transition | Event | Transfer reacts |
+**Two independent lifecycles** — `APPROVED` and `RELEASED` are not the same fact:
+
+```text
+ APPROVAL ENGINE                          BANKING
+ SUBMITTED                                CREATED
+    │                                        │
+    ▼                                        ▼
+ (workflow's own review stages)          PENDING_APPROVAL
+    │                                        │
+    ▼                                        │  ApprovalApproved
+ APPROVED  ──────────────────────────────────▶
+                                              ▼
+                                        RELEASE_PENDING ──▶ RELEASED
+```
+
+`APPROVED` means the approval requirement is satisfied; `RELEASED` means funds actually moved. Neither
+service reads the other's state — only the event on the arrow crosses.
+
+**End-to-end happy path:** maker submits → Banking persists `CREATED`, returns immediately → Banking
+publishes to Redis → Engine resolves policy, snapshots the workflow, creates the request → checkers
+complete the required stages → Engine reaches `APPROVED`, publishes the event → Banking moves to
+`RELEASE_PENDING` → Core Banking confirms → `RELEASED`.
+
+---
+
+## 3. Correctness & Concurrency — LLD
+
+**Command execution** (every approve/reject/cancel runs this shape):
+
+```text
+approve()
+  → lock request row
+  → find transition from current state
+  → validate allowedRoles + guards
+  → check duplicate decision (idempotent replay)
+  → insert approval decision
+  → count approvals for current stage
+  → quorum met? guarded state UPDATE : stay put, audit the vote
+  → audit + outbox
+```
+
+State changes use an optimistic, version-checked update; quorum counting takes a short row lock
+separately, because tallying committed votes is an aggregate read the version check alone can't
+protect — without it, two checkers can each see only their own uncommitted vote and a satisfied
+request strands unmet.
+
+**Concurrency**
+
+| Race | Mechanism | Result |
 |---|---|---|
-| Lands on `PENDING_APPROVAL` | `ApprovalSubmitted` | `CREATED → PENDING_APPROVAL` |
-| Lands on `APPROVED` (auto-release) | `ApprovalSubmitted`, then `ApprovalApproved` | → `PENDING_APPROVAL → RELEASE_PENDING → RELEASED` |
-| `APPROVED` (quorum met) | `ApprovalApproved` | → `RELEASE_PENDING → RELEASED` |
-| `REJECTED` / `CANCELLED` / `EXPIRED` | matching event | same state; maker notified (except cancel — self-caused) |
-| Workflow never created | `ApprovalCreationFailed` | `CREATED → FAILED`; maker notified |
+| Checker A vs. Checker B | row lock (counting) + guarded update (transition) | exactly one transitions |
+| Maker cancel vs. checker approve | version-checked update, no special-casing | whichever commits first wins |
+| Approve vs. SLA expiry | version-checked update, no lock on the sweeper | whichever commits first wins |
 
-## 9. Workflows & Policy
-
-Routing between tiers happens *before* the engine, by picking which workflow to instantiate — not a guard branching inside one. `requiredApprovals` is per-transition, so one workflow demands a different quorum at each stage.
-
-| Workflow | Tier (AED) | `approve` requires |
-|---|---|---|
-| `transfer-auto-release:1` | < 5,000 | 0 (unconditional) |
-| `transfer-single-checker:1` | 5,000 – 49,999.99 | 1 × `TRANSFER_CHECKER` |
-| `transfer-high-value:1` | 50,000 – 99,999.99 | 2 × `TRANSFER_CHECKER` |
-| `privileged-access:2` | ≥ 100,000 | 2×SECURITY → 1×MANAGER → 1×COMPLIANCE |
-
-`policy_rule` is editable via `PUT /policy-rules`, no redeploy. The resolved workflow freezes into `policy_snapshot` at creation — an in-flight request keeps its version even if the rule later changes.
-
-## 10. API &amp; Data Model
-
-`POST /transfers` and `POST /approvals` take `Idempotency-Key`; decisions key on `(request_id, actor_id, state)`; release keys on `transferId`.
-
-| Error `code` | HTTP | When |
-|---|---|---|
-| `CONCURRENT_STATE_CHANGE` | 409 | Guarded UPDATE lost the race |
-| `INVALID_STATE_TRANSITION` | 409 | Never legal from current state |
-| `IDEMPOTENCY_CONFLICT` | 409 | Same key, different body |
-| `FORBIDDEN_ACTION` | 403 | Role ineligible / maker self-approve |
-| `NOT_FOUND` family | 404 | Unknown request / workflow / rule |
-
-```
--- core tables, both DBs
-approval_request(id, state, version, maker_id, workflow_id/version, policy_snapshot, expires_at)
-approval_decision(request_id, actor_id, state, decision, UNIQUE(request_id, actor_id, state))
-audit_log · idempotency_key · outbox · policy_rule
-
-transfer(id, state, approval_request_id, idempotency_key UNIQUE, expires_at)
+```sql
+UPDATE approval_request SET state = :new_state, version = version + 1
+ WHERE request_id = :id AND state = :expected_state AND version = :expected_version;
 ```
 
-## 11. Representative Flows *(status path, not full sequence)*
+`rows=1` wins; `rows=0` is classified as a lost race or an illegal transition, and the whole
+transaction — decision, audit, outbox — rolls back. Never a partial write.
 
-| Scenario | Status path |
+**Idempotency** — every write keyed to its own real retry identity:
+
+```text
+Transfer submission   -> Idempotency-Key
+Approval creation      -> Idempotency-Key
+Approval decision      -> (requestId, actorId, state)
+Release                -> transferId
+```
+
+Redis delivery is at-least-once; idempotency is what makes redelivery safe without a second
+correctness mechanism.
+
+**Workflow versioning** — safe by construction, not by discipline:
+
+```text
+Workflow Registry              Request creation
+  privileged-access:1              │
+  privileged-access:2   ────▶  policy_snapshot (jsonb)
+  transfer-high-value:1            │  embeds the FULL resolved
+                                    ▼  WorkflowDefinition, frozen
+                              never re-resolved
+```
+
+A request stores its own resolved workflow definition at creation; a later version change (v1 → v2:
+`SECURITY_REVIEW`'s quorum going from 1 to 2) cannot alter a request already in flight.
+
+---
+
+## 4. Messaging, Failure & Trade-offs — HLD + LLD
+
+**Async boundary**
+
+```text
+Banking ──XADD──▶ stream:transfer-approval-create ──▶ Approval Engine
+
+Approval Engine ──(outbox → XADD)──▶ stream:approval-lifecycle-events ──▶ Banking
+```
+
+Both streams are at-least-once. A consumer acknowledges only after its local transaction commits, and
+unacknowledged messages are reclaimed and retried — publishing never happens inside the transaction
+that caused it, and acknowledging never happens outside the transaction that processed it.
+
+**Failure semantics**
+
+| Failure | Behavior |
 |---|---|
-| Auto-release (0 approvals) | `CREATED → PENDING_APPROVAL → RELEASE_PENDING → RELEASED`, no human step — the Engine emits both submit and approve events from one creation |
-| Dual control (required=2) | Checker A's vote records but quorum unmet, stays `PENDING_APPROVAL`; Checker B's vote satisfies quorum → `APPROVED → RELEASE_PENDING → RELEASED` |
-| Concurrent race (required=1) | Two checkers approve at once; the guarded version-check UPDATE lets exactly one win → `APPROVED`; the loser gets `409 CONCURRENT_STATE_CHANGE` |
-| Expiry vs. approve | Sweeper and checker race the identical guarded UPDATE with no lock between them; whichever commits first wins — `EXPIRED` or `APPROVED`, the other a no-op/409 |
+| Approval Engine unavailable | Transfer stays `CREATED`; creation command retries against Redis until Engine returns |
+| Banking unavailable after approval | Engine still transitions and audits; only event delivery waits |
+| Duplicate event delivery | Consumer dedupes by event id — no-op replay |
+| Core Banking unavailable | Transfer stays `RELEASE_PENDING`, retried with the same id |
+| Concurrent approve/cancel/expire | Exactly one transition wins (§3) |
 
-## 12. Concurrency
+**Trade-offs**
 
-Every competing transition resolves through one guarded conditional `UPDATE` — `rows=1` wins, `rows=0` rolls back and re-reads state to classify the `409`. Quorum counting additionally takes a `SELECT … FOR UPDATE` row lock: counting committed votes is an aggregate read the guarded UPDATE alone can't protect. A short `PESSIMISTIC_WRITE` beat an atomic counter (denormalizes a second source of truth) and `SERIALIZABLE`+retry (full abort/redo for shallow contention). The same UPDATE covers cancel-vs-approve for free.
+- **No funds hold.** Balance is checked once at submission, not reserved through release — two large
+  concurrent transfers against the same account can each pass validation and later both release,
+  overspending the real balance. The fix is a hold/free protocol with Core Banking, named as the one
+  gap deliberately left, not silently absent.
+- **No real IAM or notifications.** Actor identity is a trusted header, not a verified token;
+  maker notifications are logged, not sent — both are stubbed interfaces, a one-class swap each.
+- **No managed broker or production HA.** Redis Streams over Kafka/SQS is right-sized for this volume;
+  a gateway, load balancing, and horizontal scaling are production concerns this exercise omits, since
+  none of them change the ownership or consistency model being demonstrated.
 
-**Evidence:** `ApprovalConcurrencyTest` (two-checkers, cancel-vs-approve), `ExpiryVersusApproveConcurrencyTest`.
+**In / out of scope**
 
-## What I'd do with more time
-
-| Priority | Item |
+| In scope | Out of scope |
 |---|---|
-| High | **Funds hold/reservation** — closes the named concurrent-overspend gap |
-| High | **Real authentication** — OIDC/JWT in place of trusted headers |
-| Medium | **Reporting UI** over the audit trail — SLA breaches, per-checker history |
-| Medium | **Workflow authoring UI** — edit stages/roles/quorum as data |
-| Low | Finer-grained locking than `PESSIMISTIC_WRITE` at scale; dead-letter queue; physically separate the two Postgres DBs |
+| Two services, Postgres, Redis Streams | Managed broker, real core banking, real auth |
+| Idempotent submit/create/release | Multi-region, multi-currency, delegation |
+| OCC + row-lock concurrency, audit, expiry | Funds hold/reservation (named gap above) |
+| Editable policy, versioned workflows, second live domain | Tenant registry, workflow designer UI |
