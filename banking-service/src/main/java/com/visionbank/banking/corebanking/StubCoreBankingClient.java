@@ -15,7 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Component
 public class StubCoreBankingClient implements CoreBankingClient {
 
-    private static final long STUB_BALANCE_CEILING = 100_000_00L;
+    private static final long STUB_BALANCE_CEILING = 1_000_000_00L;
     private static final long STUB_LIMIT_CEILING = 500_000_00L;
 
     private final Set<String> seenDuplicateKeys = ConcurrentHashMap.newKeySet();
