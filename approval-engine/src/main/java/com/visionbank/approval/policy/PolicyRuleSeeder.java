@@ -18,13 +18,16 @@ public class PolicyRuleSeeder implements ApplicationRunner {
     private final PolicyRuleRepository rules;
     private final long autoReleaseCeiling;
     private final long singleCheckerCeiling;
+    private final long highValueCeiling;
 
     public PolicyRuleSeeder(PolicyRuleRepository rules,
                              @Value("${policy.auto-release-ceiling-minor-units}") long autoReleaseCeiling,
-                             @Value("${policy.single-checker-ceiling-minor-units}") long singleCheckerCeiling) {
+                             @Value("${policy.single-checker-ceiling-minor-units}") long singleCheckerCeiling,
+                             @Value("${policy.high-value-ceiling-minor-units}") long highValueCeiling) {
         this.rules = rules;
         this.autoReleaseCeiling = autoReleaseCeiling;
         this.singleCheckerCeiling = singleCheckerCeiling;
+        this.highValueCeiling = highValueCeiling;
     }
 
     @Override
@@ -33,6 +36,7 @@ public class PolicyRuleSeeder implements ApplicationRunner {
         rules.saveAll(List.of(
                 new PolicyRule(null, 0L, autoReleaseCeiling - 1, "transfer-auto-release", 1),
                 new PolicyRule(null, autoReleaseCeiling, singleCheckerCeiling - 1, "transfer-single-checker", 1),
-                new PolicyRule(null, singleCheckerCeiling, null, "transfer-high-value", 1)));
+                new PolicyRule(null, singleCheckerCeiling, highValueCeiling - 1, "transfer-high-value", 1),
+                new PolicyRule(null, highValueCeiling, null, "privileged-access", 2)));
     }
 }

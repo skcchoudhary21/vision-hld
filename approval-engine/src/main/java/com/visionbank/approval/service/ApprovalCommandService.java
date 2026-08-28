@@ -244,6 +244,16 @@ public class ApprovalCommandService {
             return toView(request);
         }
 
+        // Not a REJECT replay (checked above), but this actor may still have an APPROVE
+        // recorded at this exact state -- approval_decision's UNIQUE(request_id, actor_id,
+        // state) permits only one decision per actor per stage, so inserting a REJECT here
+        // would hit that constraint and surface as a raw 500. An actor can't flip their
+        // decision at the same stage; surface it as the same conflict shape create() uses
+        // for a replayed idempotency key -- same identity, different content.
+        if (decisions.existsByRequestIdAndActorIdAndState(requestId, actorId, currentState)) {
+            throw new IdempotencyConflictException(requestId);
+        }
+
         Transition transition = workflow.transitionsFrom(currentState).stream()
                 .filter(t -> t.name().equals("reject"))
                 .findFirst()

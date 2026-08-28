@@ -50,7 +50,9 @@ class PolicyRuleControllerTest {
                 .andExpect(jsonPath("$[0].workflowId", is("transfer-auto-release")))
                 .andExpect(jsonPath("$[0].minAmountMinorUnits", is(0)))
                 .andExpect(jsonPath("$[2].workflowId", is("transfer-high-value")))
-                .andExpect(jsonPath("$[2].maxAmountMinorUnits").doesNotExist());
+                .andExpect(jsonPath("$[3].workflowId", is("privileged-access")))
+                .andExpect(jsonPath("$[3].workflowVersion", is(2)))
+                .andExpect(jsonPath("$[3].maxAmountMinorUnits").doesNotExist());
 
         mockMvc.perform(get("/policy-rules/resolve?amountMinorUnits=1000000"))
                 .andExpect(status().isOk())

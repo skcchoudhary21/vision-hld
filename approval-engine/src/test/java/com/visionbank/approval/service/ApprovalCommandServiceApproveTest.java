@@ -144,6 +144,20 @@ class ApprovalCommandServiceApproveTest {
     }
 
     @Test
+    void rejectingAfterYourOwnEarlierApproveConflictsInsteadOfCrashing() {
+        // Regression: approval_decision's UNIQUE(request_id, actor_id, state) allows only
+        // one decision per actor per stage. Before this check existed, reject() only guarded
+        // against replaying an existing REJECT, so an approve-then-reject from the same actor
+        // at the same (still-pending, quorum>1) stage fell straight through to the INSERT and
+        // surfaced as a raw 500 instead of a handled conflict.
+        String id = createPending("req-approve-then-reject", "transfer-high-value");
+        service.approve(id, "checker-1", "TRANSFER_CHECKER");
+
+        assertThatThrownBy(() -> service.reject(id, "checker-1", "TRANSFER_CHECKER"))
+                .isInstanceOf(IdempotencyConflictException.class);
+    }
+
+    @Test
     void cancelTransitionsPendingToCancelled() {
         String id = createPending("req-cancel", "transfer-single-checker");
 

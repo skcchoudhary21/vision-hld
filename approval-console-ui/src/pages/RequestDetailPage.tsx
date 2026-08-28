@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Box, Typography, CircularProgress, Alert, Snackbar, Paper } from '@mui/material';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useActor } from '../state/ActorContext';
@@ -9,6 +9,14 @@ import { MakerRequestDetail } from './MakerRequestDetail';
 import { CheckerRequestDetail } from './CheckerRequestDetail';
 import { StatusChip } from '../components/StatusChip';
 
+// Backoff, not a fixed interval: fast right after an action (act() resets
+// the ref below) so your own click shows up quickly, sliding out to
+// POLL_MAX_MS if nothing changes so an idle tab left open doesn't hammer
+// the backend indefinitely.
+const POLL_INITIAL_MS = 1500;
+const POLL_MAX_MS = 8000;
+const POLL_BACKOFF_FACTOR = 1.5;
+
 export function RequestDetailPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
@@ -18,6 +26,7 @@ export function RequestDetailPage() {
   const [transfer, setTransfer] = useState<TransferDetail | null>(null);
   const [acting, setActing] = useState<string | null>(null);
   const [snack, setSnack] = useState<{ severity: 'success' | 'error'; message: string } | null>(null);
+  const pollDelayRef = useRef(POLL_INITIAL_MS);
 
   const load = useCallback(async () => {
     try {
@@ -59,24 +68,46 @@ export function RequestDetailPage() {
   // source of truth for whether to stop waiting, not just view.
   const TRANSFER_NON_TERMINAL = new Set(['CREATED', 'PENDING_APPROVAL', 'RELEASE_PENDING']);
   const transferTerminal = transfer != null && !TRANSFER_NON_TERMINAL.has(transfer.state);
+  const terminal = (view != null && view.terminalStates.includes(view.currentState)) || transferTerminal;
+  // Read inside the timeout closure below instead of the `terminal` var
+  // directly, so a state change mid-backoff (not just the initial render
+  // this effect saw) can still stop the loop without restarting it.
+  const terminalRef = useRef(terminal);
+  terminalRef.current = terminal;
 
   // Keep polling while there's nothing to show yet, or the workflow hasn't
   // reached a terminal state -- there is no push mechanism (SSE exists in
   // UiController but nothing in this app subscribes to it: EventSource can't
   // carry the X-Actor-Id/X-Actor-Role headers every other endpoint requires,
   // so plain polling reuses the same authenticated request() helper instead
-  // of carving out a header-auth exception for one endpoint).
+  // of carving out a header-auth exception for one endpoint). Depends on the
+  // derived `terminal` boolean rather than `view`/`transfer` themselves --
+  // those get a new object identity on every load(), which would otherwise
+  // restart this effect (and reset the backoff) on every single tick.
   useEffect(() => {
-    if ((view && view.terminalStates.includes(view.currentState)) || transferTerminal) return;
-    const interval = setInterval(load, 1500);
-    return () => clearInterval(interval);
-  }, [load, view, transferTerminal]);
+    if (terminalRef.current) return;
+    pollDelayRef.current = POLL_INITIAL_MS;
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    function scheduleNext() {
+      timeoutId = setTimeout(async () => {
+        if (cancelled) return;
+        await load();
+        if (cancelled || terminalRef.current) return;
+        pollDelayRef.current = Math.min(pollDelayRef.current * POLL_BACKOFF_FACTOR, POLL_MAX_MS);
+        scheduleNext();
+      }, pollDelayRef.current);
+    }
+    scheduleNext();
+    return () => { cancelled = true; clearTimeout(timeoutId); };
+  }, [load, terminal]);
 
   async function act(actionName: 'approve' | 'reject' | 'cancel') {
     setActing(actionName);
     try {
       const result = await approvalsApi.decide(id, actionName, actor.id, actor.role);
       setSnack({ severity: 'success', message: `${actionName[0].toUpperCase()}${actionName.slice(1)}d — now ${result.state}.` });
+      pollDelayRef.current = POLL_INITIAL_MS; // your own action -- poll fast again to catch the follow-on state quickly
       await load();
     } catch (e) {
       setSnack({ severity: 'error', message: e instanceof Error ? e.message : String(e) });

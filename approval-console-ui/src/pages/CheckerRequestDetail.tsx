@@ -24,6 +24,16 @@ interface Props {
 export function CheckerRequestDetail({ view, audit, transfer, actor, myActions, humanActionNames, acting, onAct }: Props) {
   const activeStage = view.stages.find((s) => s.status === 'IN_PROGRESS');
   const isTerminal = view.terminalStates.includes(view.currentState);
+  // approval_decision's UNIQUE(request_id, actor_id, state) permits exactly one decision
+  // per actor per stage: a repeat approve() from the same actor is a harmless idempotent
+  // replay server-side, but reject() after an existing approve (or vice versa) hits that
+  // constraint as a genuine conflict (409 IDEMPOTENCY_CONFLICT). Since activeStage.approvals
+  // only ever holds APPROVE decisions -- every reject transition here moves straight to a
+  // terminal state, so this stage couldn't still be IN_PROGRESS if this actor had rejected --
+  // any entry for this actor means "already decided," full stop; hide both actions rather
+  // than let the click round-trip into that error.
+  const alreadyApprovedByMe = activeStage?.approvals.some((d) => d.actorId === actor.id) ?? false;
+  const visibleActions = alreadyApprovedByMe ? [] : myActions;
   const successTerminal = isTerminal && view.stages.some((s) => s.id === view.currentState && s.status === 'COMPLETED');
   const failTerminal = isTerminal && view.stages.some((s) => s.id === view.currentState && s.status === 'FAILED');
 
@@ -103,12 +113,12 @@ export function CheckerRequestDetail({ view, audit, transfer, actor, myActions, 
         ))}
       </Stack>
 
-      {!isTerminal && myActions.length > 0 && (
+      {!isTerminal && visibleActions.length > 0 && (
         <>
           <Divider sx={{ my: 2.5 }} />
           <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
             <TextField label="Acting as" value={`${actor.name} (${actor.role})`} size="small" disabled sx={{ minWidth: 220 }} />
-            {myActions.map((a) => (
+            {visibleActions.map((a) => (
               <Button
                 key={a.name}
                 variant="contained"
@@ -123,7 +133,16 @@ export function CheckerRequestDetail({ view, audit, transfer, actor, myActions, 
           </Stack>
         </>
       )}
-      {!isTerminal && myActions.length === 0 && (
+      {!isTerminal && visibleActions.length === 0 && alreadyApprovedByMe && activeStage && (
+        <>
+          <Divider sx={{ my: 2.5 }} />
+          <Alert severity="info">
+            You ({actor.name}) already approved this stage &mdash; waiting on{' '}
+            {(activeStage.requiredApprovals ?? 1) - (activeStage.completedApprovals ?? 0)} more {actor.role} approval(s).
+          </Alert>
+        </>
+      )}
+      {!isTerminal && visibleActions.length === 0 && !alreadyApprovedByMe && (
         <>
           <Divider sx={{ my: 2.5 }} />
           <Alert severity="info">

@@ -49,7 +49,7 @@ vision-hld/
 | Concern | Owner |
 |---|---|
 | Transfer semantics, validation orchestration, duplicate detection | Transfer |
-| Policy resolution (threshold → approvals required) | Transfer |
+| Policy resolution (threshold → approvals required) | Approval Engine — moved here from Transfer post-Redis-migration; see §8 erratum |
 | Policy snapshot persistence | Approval Engine |
 | Workflow state, guards, concurrency | Approval Engine |
 | Audit, SLA expiry, outbox | Approval Engine |
@@ -147,11 +147,23 @@ once for every transition at wiring time instead of only on first use.
 
 ## 8. Policy resolution & snapshot (seam #2)
 
-Resolved inside Transfer Domain at submission time
-(`PolicyResolver.resolve(context) -> ApprovalPolicy{requiredApprovals,
-eligibleRoles, makerCanApprove}`), frozen into an immutable
-`policy_snapshot` (JSONB) the engine persists and never re-resolves. A
-later policy/config change never re-judges an in-flight request.
+**Erratum (post-Redis-migration):** this section originally specified resolution inside Transfer
+Domain over a synchronous HTTP call. That ownership moved to Approval Engine during the Redis
+Streams migration (`docs/superpowers/specs/2026-08-27-async-messaging-design.md`) precisely so
+resolution could happen in-process, with no HTTP round-trip on the consuming side. The paragraph
+below describes the *current* mechanism, not the original one; Transfer's own
+`PolicyResolver`/`ApprovalEngineClient.resolvePolicy()` classes still exist in source but have
+zero callers.
+
+Resolved in-process inside Approval Engine's `SubmissionCommandConsumer` (via
+`PolicyRuleResolutionService`) when it consumes the transfer's creation command off
+`stream:transfer-approval-create`. Required-approvals count and eligible role aren't a separate
+`ApprovalPolicy` record; they're read straight off the resolved workflow's own `approve`
+transition (`requiredApprovals`, `allowedRoles`) — `makerCanApprove` likewise isn't a policy
+field, it's the `actor_is_not_maker` guard on that same transition. The result is frozen into an
+immutable `policy_snapshot` (JSONB, embeds the full `WorkflowDefinition`) the engine persists and
+never re-resolves. A later policy/config change never re-judges an in-flight request. See
+`docs/lld.md`'s Policy Contract section for the up-to-date contract.
 
 ## 9. Request envelope (seam #3)
 

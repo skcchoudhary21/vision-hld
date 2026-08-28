@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Transfer Approval System — HLD + LLD</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f5f6f8;
+    --sheet:#ffffff;
+    --ink:#1b2430;
+    --ink-soft:#4a5568;
+    --ink-faint:#7c8798;
+    --rule:#d7dce3;
+    --rule-strong:#b7bfca;
+    --accent:#0e6b62;
+    --accent-ink:#0a4d46;
+    --accent-soft:#e4f0ee;
+    --gold:#a9762f;
+    --gold-soft:#f2e8d8;
+    --code-bg:#edeff2;
+    --danger:#9c3b3b;
+    --shadow: 0 1px 2px rgba(27,36,48,.06), 0 8px 24px rgba(27,36,48,.08);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#11151b;
+      --sheet:#171c24;
+      --ink:#e7eaee;
+      --ink-soft:#a7b0bd;
+      --ink-faint:#7d8794;
+      --rule:#2b323d;
+      --rule-strong:#3a4350;
+      --accent:#49b2a4;
+      --accent-ink:#7ecfc3;
+      --accent-soft:#182924;
+      --gold:#d3a35e;
+      --gold-soft:#2a2416;
+      --code-bg:#1d232c;
+      --danger:#d98080;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#11151b;
+    --sheet:#171c24;
+    --ink:#e7eaee;
+    --ink-soft:#a7b0bd;
+    --ink-faint:#7d879d;
+    --rule:#2b323d;
+    --rule-strong:#3a4350;
+    --accent:#49b2a4;
+    --accent-ink:#7ecfc3;
+    --accent-soft:#182924;
+    --gold:#d3a35e;
+    --gold-soft:#2a2416;
+    --code-bg:#1d232c;
+    --danger:#d98080;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 28px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{
+    font-family:"Source Serif 4", Georgia, "Times New Roman", serif;
+    color:var(--ink);
+    text-wrap:balance;
+    margin:0;
+  }
+  .mono, table.data, code, pre{
+    font-family:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric:tabular-nums;
+  }
+  a{color:var(--accent-ink);}
+
+  .doc{
+    max-width:calc(210mm + 48px);
+    margin:0 auto;
+    padding:24px 0 64px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:20px;
+  }
+  .toolbar{
+    width:210mm;
+    max-width:100%;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    font-size:11px;
+    color:var(--ink-faint);
+    letter-spacing:.02em;
+    padding:0 4px;
+  }
+  .toolbar button{
+    font:inherit;
+    font-family:"IBM Plex Sans", sans-serif;
+    font-weight:600;
+    font-size:11px;
+    letter-spacing:.04em;
+    text-transform:uppercase;
+    color:var(--accent-ink);
+    background:var(--accent-soft);
+    border:1px solid var(--rule);
+    border-radius:3px;
+    padding:6px 12px;
+    cursor:pointer;
+  }
+  .toolbar button:hover{border-color:var(--accent);}
+  .toolbar button:focus-visible, a:focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+  .sheet{
+    width:210mm;
+    min-height:297mm;
+    max-width:100%;
+    background:var(--sheet);
+    box-shadow:var(--shadow);
+    padding:15mm 16mm 14mm;
+    display:flex;
+    flex-direction:column;
+    position:relative;
+  }
+
+  .running{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    font-size:8.5px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--ink-faint);
+    border-bottom:1px solid var(--rule);
+    padding-bottom:6px;
+    margin-bottom:12px;
+  }
+  .running .tag{color:var(--accent-ink); font-weight:600;}
+
+  .foot{
+    margin-top:auto;
+    padding-top:8px;
+    border-top:1px solid var(--rule);
+    display:flex;
+    justify-content:space-between;
+    font-size:8.5px;
+    color:var(--ink-faint);
+    letter-spacing:.04em;
+  }
+
+  /* ---- Cover block (top of page 1) ---- */
+  .cover{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    padding-bottom:12px;
+    margin-bottom:10px;
+    border-bottom:2px solid var(--accent);
+  }
+  .cover .eyebrow{
+    font-size:9.5px;
+    font-weight:600;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--gold);
+  }
+  .cover h1{
+    font-size:24px;
+    font-weight:700;
+    line-height:1.15;
+  }
+  .cover .dek{
+    font-size:11.5px;
+    color:var(--ink-soft);
+    max-width:56ch;
+    line-height:1.5;
+  }
+  .cover .meta{
+    display:flex;
+    gap:18px;
+    margin-top:4px;
+    font-size:9px;
+    color:var(--ink-faint);
+  }
+  .cover .meta b{color:var(--ink-soft); font-weight:600;}
+
+  /* ---- Section system ---- */
+  .part-label{
+    font-size:9px;
+    font-weight:700;
+    letter-spacing:.16em;
+    text-transform:uppercase;
+    color:var(--sheet);
+    background:var(--accent);
+    display:inline-block;
+    padding:3px 8px;
+    border-radius:2px;
+    margin-bottom:10px;
+  }
+  section.sec{margin-bottom:13px;}
+  section.sec:last-child{margin-bottom:0;}
+  .sec h2{
+    font-size:13.5px;
+    font-weight:600;
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+    margin-bottom:6px;
+  }
+  .sec h2 .num{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    font-weight:600;
+    color:var(--accent-ink);
+    background:var(--accent-soft);
+    border-radius:2px;
+    padding:1px 5px;
+  }
+  .sec p{
+    font-size:9.8px;
+    line-height:1.55;
+    color:var(--ink-soft);
+    margin:0 0 6px;
+    max-width:100%;
+  }
+  .sec p strong{color:var(--ink); font-weight:600;}
+  .sec p code, li code{
+    font-size:9px;
+    background:var(--code-bg);
+    padding:1px 4px;
+    border-radius:2px;
+    color:var(--accent-ink);
+  }
+
+  /* ---- Tables ---- */
+  table.data{
+    width:100%;
+    border-collapse:collapse;
+    font-size:8.7px;
+    line-height:1.4;
+  }
+  table.data th{
+    text-align:left;
+    background:var(--accent);
+    color:#fdfefe;
+    font-weight:600;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    font-size:7.8px;
+    font-family:"IBM Plex Sans", sans-serif;
+    padding:4px 7px;
+  }
+  table.data td{
+    padding:4px 7px;
+    border-bottom:1px solid var(--rule);
+    color:var(--ink-soft);
+    vertical-align:top;
+  }
+  table.data tr:last-child td{border-bottom:none;}
+  table.data td.k, table.data td b{color:var(--ink); font-weight:600;}
+  table.data td.center{text-align:center;}
+  .table-wrap{overflow-x:auto;}
+
+  .twocol{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:0 14px;
+  }
+  .twocol .col h3{
+    font-size:9px;
+    font-weight:700;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    margin-bottom:4px;
+  }
+  .twocol .col.in h3{color:var(--accent-ink);}
+  .twocol .col.out h3{color:var(--ink-faint);}
+  .twocol ul{margin:0; padding-left:13px; font-size:8.8px; color:var(--ink-soft); line-height:1.6;}
+
+  .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
+  .card{
+    border:1px solid var(--rule);
+    border-top:2px solid var(--accent);
+    border-radius:3px;
+    padding:7px 9px;
+    background:var(--paper);
+  }
+  :root[data-theme="dark"] .card, :root:not([data-theme="light"]) .card{background:var(--code-bg);}
+  .card h3{
+    font-size:9.5px;
+    font-weight:700;
+    color:var(--ink);
+    margin-bottom:3px;
+  }
+  .card p{font-size:8.6px; margin:0; line-height:1.5;}
+
+  .callout{
+    border-left:2px solid var(--gold);
+    background:var(--gold-soft);
+    padding:6px 10px;
+    font-size:8.8px;
+    color:var(--ink-soft);
+    line-height:1.5;
+    border-radius:0 2px 2px 0;
+    margin:6px 0;
+  }
+  .callout b{color:var(--ink);}
+
+  pre.code{
+    background:var(--code-bg);
+    border:1px solid var(--rule);
+    border-radius:3px;
+    padding:6px 8px;
+    font-size:8px;
+    line-height:1.55;
+    overflow-x:auto;
+    color:var(--ink-soft);
+    margin:0 0 6px;
+  }
+  pre.code .c{color:var(--ink-faint);}
+  pre.code .s{color:var(--accent-ink);}
+
+  .diagram{width:100%; margin:4px 0 8px;}
+  .diagram svg{width:100%; height:auto; display:block;}
+  .diagram figcaption{
+    font-size:7.8px;
+    color:var(--ink-faint);
+    text-align:center;
+    margin-top:2px;
+    letter-spacing:.02em;
+  }
+
+  .flow-steps{list-style:none; margin:0; padding:0; font-size:8.6px; color:var(--ink-soft); line-height:1.5;}
+  .flow-steps li{
+    display:grid;
+    grid-template-columns:14px 1fr;
+    gap:6px;
+    padding:2px 0;
+  }
+  .flow-steps .b{
+    width:14px; height:14px; border-radius:50%;
+    background:var(--accent); color:#fff;
+    font-size:7.5px; font-weight:700;
+    display:flex; align-items:center; justify-content:center;
+    font-family:"IBM Plex Mono",monospace;
+  }
+  .flow-steps b{color:var(--ink);}
+
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:0 14px;}
+  .grid2 > div{min-width:0;}
+  .grid2x2{display:grid; grid-template-columns:1fr 1fr; gap:14px 16px;}
+  .grid2x2 > div{min-width:0;}
+  .flow-cap{font-size:9.2px; margin:0 0 5px; color:var(--ink);}
+  .flow-cap em{color:var(--ink-soft); font-style:normal; font-weight:400;}
+
+  @media print{
+    body{background:#fff;}
+    .toolbar{display:none;}
+    .doc{padding:0; gap:0; max-width:none;}
+    .sheet{
+      box-shadow:none;
+      width:210mm;
+      min-height:287mm;
+      padding:14mm 15mm 12mm;
+      page-break-after:always;
+    }
+    .sheet:last-child{page-break-after:auto;}
+    table.data, figure.diagram, .card, .callout, pre.code{break-inside:avoid;}
+    @page{size:A4; margin:0;}
+  }
+  @media (max-width:230mm){
+    .sheet{width:100%;}
+    .toolbar{width:100%;}
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+  <div class="toolbar">
+    <span>Transfer Approval System — Design Reference</span>
+    <button onclick="window.print()">Print / Save as PDF</button>
+  </div>
+
+  <!-- ============ PAGE 1 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">HLD · Architecture</span></div>
+
+    <div class="cover">
+      <span class="eyebrow">Design Reference · Maker–Checker Control</span>
+      <h1>Transfer Approval System</h1>
+      <p class="dek">Vision Bank corporate fund transfers pass a maker-checker control before release. Two independently deployable services split on a hard ownership line: <strong>Banking Service</strong> owns what a transfer <em>means</em> (submission, validation, release); <strong>Approval Engine</strong> owns how an approval <em>progresses</em> (workflow, policy, state, quorum, audit, expiry). Neither writes the other's database; they coordinate over the network. The approval mechanism is domain-independent — proven by a second workflow (<code>privileged-access</code>) running on the same engine with zero code change.</p>
+      <div class="meta">
+        <span><b>Services</b> Banking · Approval Engine</span>
+        <span><b>Store</b> PostgreSQL ×2, Redis Streams</span>
+        <span><b>Status</b> v1 · local docker-compose</span>
+      </div>
+    </div>
+
+    <span class="part-label">Part I — High-Level Design</span>
+
+    <section class="sec">
+      <h2><span class="num">§1</span>Context &amp; Deployment</h2>
+      <p>One <code>docker-compose</code> command runs: one Postgres (two DBs), one Redis, both services. Solid = sync REST; dashed = async Redis Streams. Dashed-border nodes are production topology, not in the local build.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 760 232" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Deployment diagram">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-ink)"/></marker>
+          </defs>
+          <style>
+            .n-box{fill:var(--sheet); stroke:var(--rule-strong); stroke-width:1;}
+            .n-acc{fill:var(--accent-soft); stroke:var(--accent); stroke-width:1.2;}
+            .n-txt{font-family:"IBM Plex Sans",sans-serif; font-size:9.5px; fill:var(--ink); font-weight:600;}
+            .n-sub{font-family:"IBM Plex Sans",sans-serif; font-size:7px; fill:var(--ink-faint);}
+            .edge{stroke:var(--accent-ink); stroke-width:1.2; fill:none;}
+            .edge-d{stroke:var(--ink-faint); stroke-width:1.2; fill:none; stroke-dasharray:3 3;}
+            .lbl{font-family:"IBM Plex Mono",monospace; font-size:6.6px; fill:var(--ink-faint);}
+            .grp{fill:none; stroke:var(--rule-strong); stroke-dasharray:2 3; stroke-width:1;}
+            .grplbl{font-family:"IBM Plex Sans",sans-serif; font-size:7px; fill:var(--ink-faint); letter-spacing:.04em;}
+          </style>
+
+          <rect class="grp" x="120" y="14" width="520" height="180" rx="4"/>
+          <text class="grplbl" x="130" y="26">DOCKER-COMPOSE (LOCAL)</text>
+
+          <rect class="n-box" x="8" y="88" width="86" height="34" rx="3"/>
+          <text class="n-txt" x="51" y="107" text-anchor="middle">Console</text>
+          <text class="n-sub" x="51" y="117" text-anchor="middle">maker · checker</text>
+
+          <rect class="n-acc" x="140" y="80" width="128" height="50" rx="3"/>
+          <text class="n-txt" x="204" y="101" text-anchor="middle">Banking Service</text>
+          <text class="n-sub" x="204" y="112" text-anchor="middle">transfer lifecycle</text>
+          <text class="n-sub" x="204" y="122" text-anchor="middle">+ release orchestration</text>
+
+          <rect class="n-box" x="176" y="150" width="56" height="26" rx="2"/>
+          <text class="n-sub" x="204" y="166" text-anchor="middle" style="font-size:7.4px">Postgres · banking</text>
+
+          <rect class="n-box" x="330" y="94" width="100" height="30" rx="14"/>
+          <text class="n-txt" x="380" y="113" text-anchor="middle" style="font-size:8.5px">Redis Streams</text>
+
+          <rect class="n-acc" x="492" y="80" width="140" height="50" rx="3"/>
+          <text class="n-txt" x="562" y="101" text-anchor="middle">Approval Engine</text>
+          <text class="n-sub" x="562" y="112" text-anchor="middle">workflow · policy · quorum</text>
+          <text class="n-sub" x="562" y="122" text-anchor="middle">audit · expiry · outbox</text>
+
+          <rect class="n-box" x="534" y="150" width="56" height="26" rx="2"/>
+          <text class="n-sub" x="562" y="166" text-anchor="middle" style="font-size:7.4px">Postgres · approval</text>
+
+          <rect class="n-box" x="670" y="88" width="82" height="34" rx="3" stroke-dasharray="3 3"/>
+          <text class="n-txt" x="711" y="103" text-anchor="middle" style="font-size:8.5px">Core Banking</text>
+          <text class="n-sub" x="711" y="114" text-anchor="middle">(stub)</text>
+
+          <path class="edge" d="M94,102 L138,102" marker-end="url(#arrow)"/>
+          <text class="lbl" x="98" y="96">REST sync</text>
+
+          <path class="edge-d" d="M268,100 L328,102" marker-end="url(#arrow)"/>
+          <text class="lbl" x="272" y="94">async submit</text>
+          <path class="edge-d" d="M430,112 L266,120" marker-end="url(#arrow)"/>
+          <text class="lbl" x="300" y="132">async lifecycle</text>
+
+          <path class="edge-d" d="M430,100 L490,102" marker-end="url(#arrow)"/>
+          <path class="edge" d="M204,130 L204,148" marker-end="url(#arrow)"/>
+          <path class="edge" d="M562,130 L562,148" marker-end="url(#arrow)"/>
+
+          <path class="edge" d="M632,110 L668,105" marker-end="url(#arrow)"/>
+          <text class="lbl" x="633" y="145">REST sync</text>
+          <text class="lbl" x="633" y="153">idempotent by transferId</text>
+
+          <text class="grplbl" x="130" y="205" style="font-size:6.6px">solid = sync REST · dashed = async Redis Streams · dashed border = production topology, not in local build</text>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§2</span>Service Responsibilities &amp; Data Ownership</h2>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th style="width:46%">Concern</th><th>Owner</th></tr>
+        <tr><td>Transfer semantics, validation, duplicate detection</td><td class="k">Banking</td></tr>
+        <tr><td>Policy rules (amount → workflow) + resolution + snapshot</td><td class="k">Approval Engine</td></tr>
+        <tr><td>Workflow state, guards, quorum, concurrency</td><td class="k">Approval Engine</td></tr>
+        <tr><td>Audit, SLA expiry, outbox</td><td class="k">Approval Engine</td></tr>
+        <tr><td>Release orchestration + release idempotency</td><td class="k">Banking</td></tr>
+        <tr><td>Balance/limit authority, money movement</td><td class="k">Core Banking (stub)</td></tr>
+      </table>
+      </div>
+      <p style="margin-top:6px">Policy is data, not code: an editable <code>policy_rule</code> table in the Engine, resolved in-process when it consumes the creation command. Required-approvals and eligible role are attributes of the resolved workflow's <code>approve</code> transition — one source of truth.</p>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§3</span>Communication Pattern</h2>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th>Flow</th><th>Pattern</th><th>If counterparty down</th></tr>
+        <tr><td class="k">Client → Banking</td><td>REST sync</td><td>Fails fast, retryable — a human is waiting</td></tr>
+        <tr><td class="k">Banking → Engine (submit)</td><td>Redis Stream, at-least-once</td><td><code>POST /transfers</code> never blocks; command persists until Engine returns</td></tr>
+        <tr><td class="k">Engine → Banking (lifecycle)</td><td>Redis Stream, at-least-once</td><td>Event persists; reclaimed via XPENDING/XCLAIM on consumer crash</td></tr>
+        <tr><td class="k">Banking → Core Banking</td><td>REST sync, idempotent</td><td>Holds at <code>RELEASE_PENDING</code>, retried — can't double-release</td></tr>
+      </table>
+      </div>
+      <p style="margin-top:6px">Neither service's uptime gates the other's. At-least-once is safe because every consumer was already idempotent (§4).</p>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>1 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 2 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">HLD · Communication &amp; Guarantees</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§3</span>Communication Pattern</h2>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th>Flow</th><th>Pattern</th><th>If counterparty down</th></tr>
+        <tr><td class="k">Client → Banking</td><td>REST sync</td><td>Fails fast, retryable — a human is waiting</td></tr>
+        <tr><td class="k">Banking → Engine (submission)</td><td>Redis Stream, at-least-once</td><td><code>POST /transfers</code> never blocks; command persists in Redis until Engine returns</td></tr>
+        <tr><td class="k">Engine → Banking (lifecycle)</td><td>Redis Stream, at-least-once</td><td>Event persists; reclaimed via XPENDING/XCLAIM if a consumer crashes mid-handling</td></tr>
+        <tr><td class="k">Banking → Core Banking (release)</td><td>REST sync, idempotent by <code>transferId</code></td><td>Holds at <code>RELEASE_PENDING</code>, retried — retry can't double-release</td></tr>
+      </table>
+      </div>
+      <p style="margin-top:6px">Each hop uses the pattern its failure mode demands, not one style uniformly. Neither service's uptime gates the other's. At-least-once is safe because every consumer was already idempotent (§4).</p>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§4</span>Non-Functional</h2>
+      <div class="cards">
+        <div class="card">
+          <h3>Idempotency</h3>
+          <p><code>POST /transfers</code> and <code>POST /approvals</code> take an <code>Idempotency-Key</code>; same key + same body replays the result, same key + different body → <code>409 IDEMPOTENCY_CONFLICT</code>. Decisions (approve/reject/cancel) are idempotent per <code>(request_id, actor_id, state)</code> — a checker's intent is the natural key. Release is idempotent on <code>transferId</code>. This is what makes at-least-once redelivery safe with no second correctness mechanism.</p>
+        </div>
+        <div class="card">
+          <h3>Consistency</h3>
+          <p>Strong/transactional <em>within</em> each service (one local ACID transaction per state change: state + audit + outbox commit atomically); <strong>eventually consistent across the boundary</strong> — no distributed transaction. Resilience is symmetric: Engine down doesn't break <code>submit()</code>; Banking down doesn't break approve/reject/cancel — only event <em>delivery</em> waits.</p>
+        </div>
+        <div class="card">
+          <h3>Partial failure</h3>
+          <p>A crash between "decision recorded" and "event delivered" never loses the decision — it only delays the counterparty finding out; the reconciler on each side closes the gap.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>2 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 3 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">HLD · Trade-offs &amp; Scope</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§5</span>Trade-offs <span style="font-family:'IBM Plex Sans',sans-serif; font-weight:400; font-size:9px; color:var(--ink-faint); text-transform:none; letter-spacing:0;">(Decision · Why · Gave up · Revisit)</span></h2>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th style="width:17%">Decision</th><th style="width:30%">Why</th><th style="width:24%">Gave up</th><th>Revisit when</th></tr>
+        <tr><td class="k">Redis Streams, not Kafka/SQS</td><td>Needs exactly durable at-least-once + consumer groups + crash-recovery (XPENDING/XCLAIM); single-region volume. One running container.</td><td>Long retention, replay-from-genesis, partitioned fan-out</td><td>Multi-region, event-sourcing, throughput past one node — outbox already decouples persist/publish, so migration is contained</td></tr>
+        <tr><td class="k">Postgres both services</td><td>Correctness rests on one local ACID txn (state+audit+outbox); needs <code>FOR UPDATE</code> + guarded <code>UPDATE</code>; JSONB for opaque payload</td><td>Horizontal write-scale, schema-free flexibility (neither needed)</td><td>Single-writer becomes a bottleneck (not at this volume)</td></tr>
+        <tr><td class="k">Hybrid lock: OCC default, row-lock only for quorum tally</td><td>Single-row transitions need no lock; loser rolls back as clean 409. Counting votes is read-then-write → needs a stable read</td><td>Uniformity (two mechanisms)</td><td>—</td></tr>
+        <tr><td class="k">3 idempotency keys, not one global</td><td>Header for create, <code>(request,actor,state)</code> for intent-based decisions, <code>transferId</code> for release — each matches its call's real retry identity</td><td>Slight extra surface</td><td>—</td></tr>
+        <tr><td class="k">No funds hold between validate and release</td><td>Second stateful Core-Banking contract beyond time budget</td><td>Two concurrent transfers can each pass validation, both release, overspend</td><td>Named gap — first thing to build next</td></tr>
+      </table>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§6</span>Assumptions &amp; Out of Scope</h2>
+      <div class="twocol">
+        <div class="col in">
+          <h3>In scope</h3>
+          <ul>
+            <li>Two services, Postgres, Redis Streams, docker-compose</li>
+            <li>REST sync commands, outbox + stream async events</li>
+            <li>OCC + row-lock concurrency, audit, expiry</li>
+            <li>Idempotent submission/create/release</li>
+            <li>Editable policy rules, versioned workflows; second domain (<code>privileged-access</code>), live ≥ AED 100,000 tier</li>
+          </ul>
+        </div>
+        <div class="col out">
+          <h3>Out of scope</h3>
+          <ul>
+            <li>Managed/clustered broker, real core banking, real auth</li>
+            <li>Multi-region, multi-currency, delegation</li>
+            <li>Tenant registry, BPMN/Temporal/Camunda</li>
+            <li>Funds hold/reservation (named gap, §5)</li>
+            <li>Dead-letter queue, real notification channel</li>
+          </ul>
+        </div>
+      </div>
+      <p style="margin-top:8px">Core banking, notifications, and auth are stubbed per the assignment. The console forwards trusted <code>X-Actor-Id</code>/<code>X-Actor-Role</code> headers, standing in for real auth.</p>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>3 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 4 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Approval State Machine</span></div>
+    <span class="part-label">Part II — Low-Level Design</span>
+
+    <section class="sec">
+      <h2><span class="num">§7</span>Approval State Machine (Engine)</h2>
+      <p><code>APPROVED</code> means the approval requirement is satisfied — not that money has moved. Below is the common shape; <code>transfer-auto-release</code> has only the top edge, single/high-value only the bottom five.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 720 118" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Approval state machine, common shape">
+          <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-ink)"/></marker></defs>
+          <style>
+            .st{fill:var(--sheet); stroke:var(--rule-strong); stroke-width:1;}
+            .st-term-ok{fill:var(--accent-soft); stroke:var(--accent);}
+            .st-term-no{fill:var(--gold-soft); stroke:var(--gold);}
+            .stt{font-family:"IBM Plex Mono",monospace; font-size:8px; fill:var(--ink); font-weight:600;}
+            .ste{stroke:var(--accent-ink); stroke-width:1.1; fill:none;}
+            .stl{font-family:"IBM Plex Sans",sans-serif; font-size:6.6px; fill:var(--ink-faint);}
+          </style>
+          <rect class="st" x="10" y="44" width="94" height="28" rx="14"/>
+          <text class="stt" x="57" y="62" text-anchor="middle">SUBMITTED</text>
+
+          <rect class="st-term-ok" x="150" y="4" width="110" height="26" rx="3"/>
+          <text class="stt" x="205" y="21" text-anchor="middle">APPROVED</text>
+          <path class="ste" d="M60,42 L150,20" marker-end="url(#a2)"/>
+          <text class="stl" x="70" y="32">auto_approve (auto-release only)</text>
+
+          <rect class="st" x="150" y="46" width="130" height="26" rx="3"/>
+          <text class="stt" x="215" y="63" text-anchor="middle" style="font-size:7.4px">PENDING_APPROVAL</text>
+          <path class="ste" d="M104,58 L148,59" marker-end="url(#a2)"/>
+          <text class="stl" x="112" y="54">require_approval</text>
+
+          <rect class="st-term-ok" x="440" y="4" width="110" height="24" rx="3"/>
+          <text class="stt" x="495" y="20" text-anchor="middle">APPROVED</text>
+          <path class="ste" d="M280,50 L438,17" marker-end="url(#a2)"/>
+          <text class="stl" x="330" y="30">approve [quorum met, actor≠maker]</text>
+
+          <rect class="st-term-no" x="440" y="36" width="110" height="24" rx="3"/>
+          <text class="stt" x="495" y="52" text-anchor="middle">REJECTED</text>
+          <path class="ste" d="M280,56 L438,46" marker-end="url(#a2)"/>
+          <text class="stl" x="330" y="42">reject [TRANSFER_CHECKER]</text>
+
+          <rect class="st-term-no" x="440" y="68" width="110" height="24" rx="3"/>
+          <text class="stt" x="495" y="84" text-anchor="middle">CANCELLED</text>
+          <path class="ste" d="M280,63 L438,78" marker-end="url(#a2)"/>
+          <text class="stl" x="330" y="72">cancel [actor=maker]</text>
+
+          <rect class="st-term-no" x="440" y="100" width="110" height="16" rx="3"/>
+          <text class="stt" x="495" y="112" text-anchor="middle" style="font-size:7px">EXPIRED</text>
+          <path class="ste" d="M280,68 L438,105" marker-end="url(#a2)"/>
+          <text class="stl" x="330" y="98">expire [sla_expired]</text>
+        </svg>
+        <figcaption>Common shape — every tier below AED 100,000</figcaption>
+      </figure>
+
+      <p><code>privileged-access:2</code> (≥ AED 100,000, the live top tier) replaces the single <code>PENDING_APPROVAL</code> with a three-stage chain — same engine, no special-casing (reject/cancel/expire apply from each stage, omitted for readability):</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 720 62" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Privileged access chain">
+          <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-ink)"/></marker></defs>
+          <style>
+            .st{fill:var(--sheet); stroke:var(--rule-strong); stroke-width:1;}
+            .st-ok{fill:var(--accent-soft); stroke:var(--accent);}
+            .stt{font-family:"IBM Plex Mono",monospace; font-size:7.4px; fill:var(--ink); font-weight:600;}
+            .ste{stroke:var(--accent-ink); stroke-width:1.1; fill:none;}
+            .stl{font-family:"IBM Plex Sans",sans-serif; font-size:6.4px; fill:var(--ink-faint);}
+          </style>
+          <rect class="st" x="0" y="16" width="88" height="26" rx="13"/><text class="stt" x="44" y="33" text-anchor="middle">SUBMITTED</text>
+          <rect class="st" x="150" y="14" width="128" height="28" rx="3"/><text class="stt" x="214" y="32" text-anchor="middle" style="font-size:6.8px">SECURITY_REVIEW</text>
+          <rect class="st" x="352" y="14" width="128" height="28" rx="3"/><text class="stt" x="416" y="32" text-anchor="middle" style="font-size:6.8px">MANAGER_APPROVAL</text>
+          <rect class="st" x="554" y="14" width="128" height="28" rx="3"/><text class="stt" x="618" y="32" text-anchor="middle" style="font-size:6.8px">COMPLIANCE_REVIEW</text>
+
+          <path class="ste" d="M88,29 L148,28" marker-end="url(#a3)"/>
+          <path class="ste" d="M278,28 L350,28" marker-end="url(#a3)"/><text class="stl" x="285" y="12" text-anchor="middle">approve [2× SECURITY_CHECKER]</text>
+          <path class="ste" d="M480,28 L552,28" marker-end="url(#a3)"/><text class="stl" x="487" y="12" text-anchor="middle">approve [1× MANAGER_CHECKER]</text>
+          <text class="stl" x="690" y="58" text-anchor="end">→ APPROVED on approve [1× COMPLIANCE_CHECKER]</text>
+        </svg>
+      </figure>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>4 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 5 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Transfer Lifecycle &amp; Correspondence</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§8</span>Transfer Lifecycle (Banking)</h2>
+      <p><code>CREATED</code> is the brief async gap between <code>POST /transfers</code> returning and its creation command being consumed (<code>approvalRequestId</code> is <code>null</code> throughout; <code>GET</code> reports it honestly). <code>FAILED</code> is generic-but-resumable: today its one trigger is <code>ApprovalCreationFailed</code>; a second failure mode should split by cause rather than add a reason code. No <code>RELEASE_FAILED</code> — a transient core-banking failure retries in place.</p>
+      <figure class="diagram">
+        <svg viewBox="0 0 720 90" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Transfer lifecycle state machine">
+          <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent-ink)"/></marker></defs>
+          <style>
+            .st{fill:var(--sheet); stroke:var(--rule-strong); stroke-width:1;}
+            .st-ok{fill:var(--accent-soft); stroke:var(--accent);}
+            .st-no{fill:var(--gold-soft); stroke:var(--gold);}
+            .stt{font-family:"IBM Plex Mono",monospace; font-size:7.6px; fill:var(--ink); font-weight:600;}
+            .ste{stroke:var(--accent-ink); stroke-width:1.1; fill:none;}
+            .stl{font-family:"IBM Plex Sans",sans-serif; font-size:6.4px; fill:var(--ink-faint);}
+          </style>
+          <rect class="st" x="0" y="4" width="90" height="26" rx="3"/><text class="stt" x="45" y="21" text-anchor="middle" style="font-size:7px">CREATED</text>
+          <rect class="st" x="170" y="4" width="120" height="26" rx="3"/><text class="stt" x="230" y="21" text-anchor="middle" style="font-size:6.6px">PENDING_APPROVAL</text>
+          <rect class="st" x="360" y="4" width="120" height="26" rx="3"/><text class="stt" x="420" y="21" text-anchor="middle" style="font-size:6.6px">RELEASE_PENDING</text>
+          <rect class="st-ok" x="550" y="4" width="90" height="26" rx="3"/><text class="stt" x="595" y="21" text-anchor="middle">RELEASED</text>
+
+          <path class="ste" d="M90,17 L168,17" marker-end="url(#a4)"/><text class="stl" x="94" y="12">ApprovalSubmitted</text>
+          <path class="ste" d="M290,17 L358,17" marker-end="url(#a4)"/><text class="stl" x="294" y="12">ApprovalApproved</text>
+          <path class="ste" d="M480,17 L548,17" marker-end="url(#a4)"/><text class="stl" x="484" y="12">core banking confirms</text>
+
+          <rect class="st-no" x="0" y="60" width="90" height="24" rx="3"/><text class="stt" x="45" y="76" text-anchor="middle" style="font-size:7px">FAILED</text>
+          <path class="ste" d="M45,32 L45,58" marker-end="url(#a4)"/><text class="stl" x="49" y="46">ApprovalCreationFailed</text>
+          <path class="ste" d="M90,68 Q130,68 168,26" marker-end="url(#a4)"/><text class="stl" x="95" y="88">resumed (same Idempotency-Key)</text>
+
+          <rect class="st-no" x="170" y="60" width="76" height="22" rx="3"/><text class="stt" x="208" y="75" text-anchor="middle" style="font-size:6.6px">REJECTED</text>
+          <rect class="st-no" x="256" y="60" width="80" height="22" rx="3"/><text class="stt" x="296" y="75" text-anchor="middle" style="font-size:6.6px">CANCELLED</text>
+          <rect class="st-no" x="346" y="60" width="70" height="22" rx="3"/><text class="stt" x="381" y="75" text-anchor="middle" style="font-size:6.6px">EXPIRED</text>
+          <path class="ste" d="M215,32 L215,58" marker-end="url(#a4)"/>
+          <path class="ste" d="M240,32 L296,58" marker-end="url(#a4)"/>
+          <path class="ste" d="M260,32 L378,58" marker-end="url(#a4)"/>
+        </svg>
+      </figure>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§9</span>Approval ↔ Transfer Correspondence</h2>
+      <p>Two independent machines; the Engine never queries Transfer's state, Transfer only consumes events. Every reaction is conditional on Transfer still being in the expected state — a duplicate/out-of-order delivery is a logged no-op.</p>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th>Engine transition</th><th>Event(s)</th><th>Transfer reacts</th></tr>
+        <tr><td class="k">Created → <code>PENDING_APPROVAL</code></td><td><code>ApprovalSubmitted</code></td><td><code>CREATED</code> → <code>PENDING_APPROVAL</code> (links <code>approvalRequestId</code>)</td></tr>
+        <tr><td class="k">Created → <code>APPROVED</code> (auto-release)</td><td><code>ApprovalSubmitted</code>, then <code>ApprovalApproved</code></td><td><code>CREATED</code> → <code>PENDING_APPROVAL</code> → <code>RELEASE_PENDING</code> → <code>RELEASED</code></td></tr>
+        <tr><td class="k"><code>PENDING_APPROVAL</code> → <code>APPROVED</code> (quorum met)</td><td><code>ApprovalApproved</code></td><td>→ <code>RELEASE_PENDING</code> → <code>RELEASED</code></td></tr>
+        <tr><td class="k">→ <code>REJECTED</code></td><td><code>ApprovalRejected</code></td><td>→ <code>REJECTED</code>; maker notified</td></tr>
+        <tr><td class="k">→ <code>CANCELLED</code></td><td><code>ApprovalCancelled</code></td><td>→ <code>CANCELLED</code> (no notify — maker caused it)</td></tr>
+        <tr><td class="k">→ <code>EXPIRED</code> (sweeper)</td><td><code>ApprovalExpired</code></td><td>→ <code>EXPIRED</code>; maker notified</td></tr>
+        <tr><td class="k">Workflow never created</td><td><code>ApprovalCreationFailed</code></td><td><code>CREATED</code> → <code>FAILED</code>; maker notified</td></tr>
+      </table>
+      </div>
+      <p style="margin-top:6px"><code>ApprovalSubmitted</code> is always emitted on creation, so Transfer always sees <code>CREATED → PENDING_APPROVAL</code> before <code>RELEASE_PENDING</code> — even on auto-release, where the Engine itself never visits <code>PENDING_APPROVAL</code>.</p>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>5 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 6 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Workflows &amp; API Contracts</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§10</span>Workflows &amp; Policy</h2>
+      <p>Routing between tiers happens <em>before</em> the engine, by picking which workflow to instantiate — not by a guard branching inside one workflow. <code>requiredApprovals</code> is per-transition, so one workflow can demand a different quorum at each stage.</p>
+      <div class="table-wrap">
+      <table class="data">
+        <tr><th>Workflow (id:version)</th><th>Tier (AED)</th><th><code>approve</code> requires</th></tr>
+        <tr><td class="k">transfer-auto-release:1</td><td>&lt; 5,000</td><td>0 (unconditional)</td></tr>
+        <tr><td class="k">transfer-single-checker:1</td><td>5,000 – 49,999.99</td><td>1 × TRANSFER_CHECKER</td></tr>
+        <tr><td class="k">transfer-high-value:1</td><td>50,000 – 99,999.99</td><td>2 × TRANSFER_CHECKER</td></tr>
+        <tr><td class="k">privileged-access:2</td><td>≥ 100,000</td><td>2 × SECURITY, then 1 × MANAGER, then 1 × COMPLIANCE</td></tr>
+      </table>
+      </div>
+      <p style="margin-top:6px"><code>policy_rule(min, max, workflow_id, workflow_version)</code> is editable via <code>PUT /policy-rules</code>, no redeploy. The resolved workflow is frozen into <code>policy_snapshot</code> at creation and never re-resolved, so an in-flight request keeps its version even if the rule changes.</p>
+    </section>
+
+    <section class="sec">
+      <h2><span class="num">§11</span>API Contracts</h2>
+      <div class="grid2">
+        <div>
+          <pre class="code"><span class="c">// POST /transfers (Banking; Idempotency-Key) — creates + submits;</span>
+<span class="c">// submission is async, response only reflects row creation</span>
+→ {"makerId":"maker-1","fromAccount":"ACC-1",
+   "toAccount":"ACC-2","amountMinorUnits":500000,
+   "currency":"AED"}
+← 200 <span class="s">{"transferId":"abc123","state":"CREATED"}</span></pre>
+          <pre class="code"><span class="c">// POST /approvals (Engine; Idempotency-Key) —</span>
+<span class="c">// caller names the resolved workflow</span>
+→ {"requestId":"abc123","workflowId":"transfer-single-checker",
+   "workflowVersion":1,"payloadJson":"...",
+   "expiresAt":"2026-08-26T10:00:00Z"}
+← 200 <span class="s">{"requestId":"abc123","state":"PENDING_APPROVAL","version":1}</span></pre>
+          <pre class="code"><span class="c">// POST /approvals/{id}/approve (idempotent per</span>
+<span class="c">// request_id, actor_id, state — reject/cancel share the shape)</span>
+→ {"actorId":"checker-1","actorRole":"TRANSFER_CHECKER"}
+← 200 <span class="s">{"requestId":"abc123","state":"APPROVED","version":2}</span></pre>
+        </div>
+        <div class="table-wrap">
+          <table class="data">
+            <tr><th>Error <code>code</code></th><th>HTTP</th><th>When</th></tr>
+            <tr><td class="k">CONCURRENT_STATE_CHANGE</td><td>409</td><td>Guarded UPDATE lost the race; action was legal, someone won first</td></tr>
+            <tr><td class="k">INVALID_STATE_TRANSITION</td><td>409</td><td>Action never legal from any state reaching current</td></tr>
+            <tr><td class="k">IDEMPOTENCY_CONFLICT</td><td>409</td><td>Same key/<code>requestId</code> replayed with a different body</td></tr>
+            <tr><td class="k">FORBIDDEN_ACTION</td><td>403</td><td>Role not eligible (or maker self-approving)</td></tr>
+            <tr><td class="k">NOT_FOUND / WORKFLOW_NOT_FOUND / POLICY_RULE_NOT_FOUND</td><td>404</td><td>Unknown request / workflow / no rule covers amount</td></tr>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>6 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 7 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Data Model</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§12</span>Data Model</h2>
+      <pre class="code mono" style="font-size:8.6px; line-height:1.75;"><span class="c">-- approval DB</span>
+approval_request(request_id PK, request_type, state, version, maker_id,
+                 workflow_id, workflow_version, policy_snapshot jsonb, payload jsonb,
+                 created_at, expires_at)
+approval_decision(decision_id PK, request_id, actor_id, actor_role, state, decision,
+                  created_at, <span class="s">UNIQUE(request_id, actor_id, state)</span>)
+audit_log(audit_id PK, request_id, actor_id, actor_role, action,
+          previous_state, new_state, created_at, metadata)
+idempotency_key(idem_key PK, command_type, request_id, request_hash, result jsonb, created_at)
+outbox(event_id PK, request_id, event_type, event_version, payload jsonb,
+       created_at, published_at, claimed_at)
+policy_rule(id PK, min_amount_minor_units, max_amount_minor_units, workflow_id, workflow_version)
+
+<span class="c">-- transfer DB</span>
+transfer(transfer_id PK, maker_id, from_account, to_account, amount_minor_units, currency,
+         state, approval_request_id, <span class="s">idempotency_key UNIQUE</span>, expires_at, created_at)
+processed_event(event_id PK, processed_at)</pre>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>7 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 8 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Sequence Diagrams</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§13</span>Sequence Diagrams</h2>
+      <div class="grid2x2">
+        <div>
+          <p class="flow-cap"><b>(a) Auto-release</b> <em>(0 approvals)</em></p>
+          <ol class="flow-steps">
+            <li><span class="b">1</span><span>Banking persists transfer to <code>CREATED</code> and returns immediately</span></li>
+            <li><span class="b">2</span><span>Banking → Redis: <code>XADD transfer-approval-create</code></span></li>
+            <li><span class="b">3</span><span>Engine consumes, resolves v1, commits — <code>ApprovalSubmitted</code> + <code>ApprovalApproved</code></span></li>
+            <li><span class="b">4</span><span>Engine → Redis: <code>XADD lifecycle-events</code> (outbox relay)</span></li>
+            <li><span class="b">5</span><span>Banking consumes: link to <code>PENDING_APPROVAL</code>, release to <code>RELEASE_PENDING</code> → <code>RELEASED</code></span></li>
+          </ol>
+        </div>
+        <div>
+          <p class="flow-cap"><b>(b) Multi-approver</b> <em>— dual control accumulates, required=2</em></p>
+          <ol class="flow-steps">
+            <li><span class="b">1</span><span>Checker A → Engine: <code>POST /approve</code></span></li>
+            <li><span class="b">2</span><span>Engine: <code>FOR UPDATE</code>, records vote 1, count 1 of 2 — quorum unmet</span></li>
+            <li><span class="b">3</span><span>Engine → A: <b>200 state PENDING_APPROVAL</b></span></li>
+            <li><span class="b">4</span><span>Checker B → Engine: <code>POST /approve</code></span></li>
+            <li><span class="b">5</span><span>Engine: <code>FOR UPDATE</code>, records vote 2, count 2 of 2 — quorum met</span></li>
+            <li><span class="b">6</span><span>Engine: guarded <code>UPDATE WHERE state=PENDING AND version=1</code> → <code>APPROVED</code></span></li>
+            <li><span class="b">7</span><span>Engine → B: <b>200 state APPROVED, version 2</b></span></li>
+          </ol>
+        </div>
+        <div>
+          <p class="flow-cap"><b>(b′) Concurrent-approve race</b> <em>(required=1, exactly one wins)</em></p>
+          <ol class="flow-steps">
+            <li><span class="b">1</span><span>Checker A and Checker B both <code>POST /approve</code></span></li>
+            <li><span class="b">2</span><span>A's guarded <code>UPDATE (state=PENDING, version=1)</code> gives rows=1 — wins</span></li>
+            <li><span class="b">3</span><span>Engine → A: <b>200 APPROVED v2</b></span></li>
+            <li><span class="b">4</span><span>B's same UPDATE gives rows=0</span></li>
+            <li><span class="b">5</span><span>Engine → B: <b>409 CONCURRENT_STATE_CHANGE</b> (currentState APPROVED)</span></li>
+          </ol>
+        </div>
+        <div>
+          <p class="flow-cap"><b>(c) Expiry vs. approve</b> <em>(optimistic, no lock on sweeper)</em></p>
+          <ol class="flow-steps">
+            <li><span class="b">1</span><span>Sweeper: <code>UPDATE WHERE state=PENDING AND version=1</code> → <code>EXPIRED</code></span></li>
+            <li><span class="b">2</span><span>Checker (in parallel): <code>UPDATE WHERE state=PENDING AND version=1</code> → <code>APPROVED</code></span></li>
+            <li><span class="b">3</span><span>Exactly one gives rows=1, the other rows=0 (no-op / 409)</span></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>8 / 9</span></div>
+  </div>
+
+  <!-- ============ PAGE 9 ============ -->
+  <div class="sheet">
+    <div class="running"><span>Vision Bank — Corporate Transfers</span><span class="tag">LLD · Concurrency &amp; Roadmap</span></div>
+
+    <section class="sec">
+      <h2><span class="num">§14</span>Concurrency / Race Handling</h2>
+      <p>Every competing transition resolves through one guarded conditional UPDATE:</p>
+      <pre class="code">UPDATE approval_request SET state = :new_state, version = version + 1
+ WHERE request_id = :id AND state = :expected_state AND version = :expected_version;
+<span class="c">-- rows=1 -&gt; won ; rows=0 -&gt; lost race or illegal transition (whole txn rolls back)</span></pre>
+      <p>On <code>rows=0</code> the whole transaction rolls back (decision, audit, outbox); re-reading state classifies it as <code>409 CONCURRENT_STATE_CHANGE</code> (legal predecessor) or <code>409 INVALID_STATE_TRANSITION</code> (never reachable). The same UPDATE covers cancel-vs-approve for free — whichever commits first wins.</p>
+      <p>Quorum counting additionally takes <code>SELECT … FOR UPDATE</code>: counting committed votes is an aggregate read the guarded UPDATE alone can't protect — without it, two checkers each see only their own uncommitted vote and a satisfied request strands in <code>PENDING_APPROVAL</code>. Alternatives rejected: atomic counter (denormalizes a second source of truth), <code>SERIALIZABLE</code>+retry (full abort/redo for shallow contention), split-transaction (turns a sync decision eventually-consistent for no gain). A short one-row <code>PESSIMISTIC_WRITE</code> is the simplest correct option. A server-side <code>UNIQUE(request_id, actor_id, state)</code> blocks a double decision from one actor.</p>
+      <div class="callout"><b>Evidence:</b> <code>ApprovalConcurrencyTest</code> (two-checkers, cancel-vs-approve), <code>ExpiryVersusApproveConcurrencyTest</code>.</div>
+    </section>
+
+    <section class="sec">
+      <h2>What I'd do with more time</h2>
+      <div class="twocol">
+        <div class="col in">
+          <ul>
+            <li><b>Funds hold/reservation</b> between validate and release — the one named gap; a <code>hold()</code>/<code>free()</code> contract with Core Banking closes the concurrent-overspend window.</li>
+            <li><b>Real authentication</b> — replace the trusted <code>X-Actor-Id</code>/<code>X-Actor-Role</code> headers with proper token-based authN/Z (OIDC/JWT at the gateway, role claims verified server-side), so maker/checker identity and eligibility aren't caller-asserted.</li>
+            <li><b>Reporting UI</b> — a console view over the audit trail: transfers by state/tier/maker, SLA breaches, per-checker decision history — turning <code>audit_log</code> into an operational and compliance surface.</li>
+            <li><b>Workflow create/edit UI</b> — a screen to author and version workflow definitions (stages, transitions, <code>allowedRoles</code>, <code>requiredApprovals</code>) and edit <code>policy_rule</code> ranges, so tiers change without hand-editing YAML — the engine already treats these as data.</li>
+          </ul>
+        </div>
+        <div class="col out">
+          <ul>
+            <li><b>Better concurrency than <code>PESSIMISTIC_WRITE</code></b> — the row lock is correct but coarse; under real load, evaluate a monotonic per-stage approval counter with a conditional guarded write, or advisory locks scoped to <code>request_id</code>, to shrink the held critical section.</li>
+            <li><b>Rate limiting</b> — per-maker and per-actor limits at the gateway (token-bucket) to protect against runaway retries and abuse, distinct from idempotency (which handles correctness, not volume).</li>
+            <li><b>Priority queue for high-value transfers</b> — a separate high-priority consumer group / stream so <code>high-value</code> and <code>privileged-access</code> approvals aren't stuck behind a backlog of low-tier auto-releases; time-sensitive money moves first.</li>
+            <li><b>Dead-letter queue</b> for messages past max delivery attempts, instead of logging loudly.</li>
+            <li><b>Physically separate the two Postgres DBs</b> so "neither service writes the other's DB" is enforced by infra, not convention.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot"><span>Transfer Approval System — HLD + LLD</span><span>9 / 9</span></div>
+  </div>
+</div>
+</body>
+</html>

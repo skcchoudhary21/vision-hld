@@ -15,9 +15,34 @@ stateDiagram-v2
     PENDING_APPROVAL --> EXPIRED: expire [sla_expired]
 ```
 
-Shown merged for readability; `transfer-auto-release` only has the top edge, the other two
-transfer workflows only have the bottom five — no single workflow contains both (see Workflow
-Definitions below).
+Shown merged for readability; `transfer-auto-release` only has the top edge,
+`transfer-single-checker`/`transfer-high-value` only have the bottom five — no single workflow
+contains both (see Workflow Definitions below). `privileged-access:2` does not fit this merge at
+all: it
+has its own 3-stage chain, each stage its own role and quorum, shown separately below since it's
+now the live routing target for the highest transfer tier.
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED
+    SUBMITTED --> SECURITY_REVIEW: submit
+    SECURITY_REVIEW --> MANAGER_APPROVAL: approve [2x SECURITY_CHECKER]
+    MANAGER_APPROVAL --> COMPLIANCE_REVIEW: approve [1x MANAGER_CHECKER]
+    COMPLIANCE_REVIEW --> APPROVED: approve [1x COMPLIANCE_CHECKER]
+    SECURITY_REVIEW --> REJECTED: reject
+    MANAGER_APPROVAL --> REJECTED: reject
+    COMPLIANCE_REVIEW --> REJECTED: reject
+    SECURITY_REVIEW --> EXPIRED: expire [sla_expired]
+    MANAGER_APPROVAL --> EXPIRED: expire [sla_expired]
+    COMPLIANCE_REVIEW --> EXPIRED: expire [sla_expired]
+```
+
+`privileged-access:2` — the workflow ≥ AED 100,000 transfers route to (see Policy Contract). Each
+stage is its own `PENDING_APPROVAL`-equivalent: Transfer's own lifecycle below still only sees
+generic `PENDING_APPROVAL` throughout — it has no visibility into which of the three review
+stages the engine is currently on, only whether it's still pending or has reached a terminal
+state. `cancel` has no edge here (unlike the transfer workflows) since a privileged-access
+request has no maker in the transfer sense to withdraw it.
 
 ## Transfer Release Lifecycle (Banking Service)
 
@@ -36,26 +61,84 @@ stateDiagram-v2
 
 `PENDING_APPROVAL` mirrors the engine's own `PENDING_APPROVAL` but is not shared state --
 each event applies only if Transfer is still in the expected state (a lost race is a logged
-no-op). `CREATED` is the brief async window between `POST /transfers` returning and its
-creation command being consumed off `stream:transfer-approval-create` (see Redis Stream
-Delivery below). `FAILED` is not necessarily terminal: resuming with the same
-`Idempotency-Key` (`TransferSubmissionService.resumeIfNeeded`) republishes the creation
-command, and `ApprovalEventListener` links the resulting workflow exactly as it would from
-`CREATED`. No `RELEASE_FAILED`: a transient core-banking failure retries in place.
+no-op).
+
+**The `CREATED` window.** `CREATED` is the transfer's state for the brief async gap between
+`POST /transfers` returning and its creation command being consumed off
+`stream:transfer-approval-create` (`approvalRequestId` still `null`) — normally sub-second to a
+few seconds, longer only if Approval Engine is down, in which case the command simply waits in
+the stream (see HLD's Consistency Model) rather than the request failing. `FAILED` is not
+necessarily terminal: resuming with the same
+`Idempotency-Key` (`TransferSubmissionService.resumeIfNeeded`) republishes the creation command,
+and `ApprovalEventListener` links the resulting workflow exactly as it would from `CREATED`. No
+`RELEASE_FAILED`: a transient core-banking failure retries in place.
+
+`FAILED` is deliberately generic for its one current cause (workflow creation giving up); if a
+second failure mode ever needs a terminal state, split by cause (e.g. add `RELEASE_FAILED`)
+rather than overload this one with a reason code.
+
+## Approval Lifecycle ↔ Transfer Lifecycle — How They Correspond
+
+These are two independent state machines, not one shared one: Approval Engine never queries
+Transfer's state, and Transfer never queries the engine's beyond consuming its events. The table
+below is the explicit mapping a reader would otherwise have to reconstruct by cross-referencing
+the two diagrams above against the event names in the Redis Stream Delivery section:
+
+| Approval Engine transition | Event(s) emitted | Transfer reacts (`ApprovalEventListener`) |
+|---|---|---|
+| Workflow created, lands on `PENDING_APPROVAL` (single-checker / high-value / privileged-access) | `ApprovalSubmitted` | `CREATED` → `PENDING_APPROVAL` (links `approvalRequestId`) |
+| Workflow created, lands on `APPROVED` directly (`transfer-auto-release`'s only transition) | `ApprovalSubmitted`, then `ApprovalApproved` — both from the same creation | `CREATED` → `PENDING_APPROVAL` → `RELEASE_PENDING` → (core banking confirms) → `RELEASED` |
+| `PENDING_APPROVAL` → `APPROVED` (quorum met) | `ApprovalApproved` | `PENDING_APPROVAL` → `RELEASE_PENDING` → `RELEASED` |
+| `PENDING_APPROVAL` → `REJECTED` | `ApprovalRejected` | `PENDING_APPROVAL` → `REJECTED`; maker notified |
+| `PENDING_APPROVAL` → `CANCELLED` | `ApprovalCancelled` | `PENDING_APPROVAL` → `CANCELLED` (no notification — the maker caused it) |
+| `PENDING_APPROVAL` → `EXPIRED` (`ExpirySweeper`) | `ApprovalExpired` | `PENDING_APPROVAL` → `EXPIRED`; maker notified |
+| Workflow never created (`SubmissionCommandReconciler` gives up) | `ApprovalCreationFailed` | `CREATED` → `FAILED`; maker notified |
+
+Notably, `ApprovalCommandService.create()` writes `ApprovalSubmitted` unconditionally on every
+creation — even `transfer-auto-release`, whose YAML only declares an `APPROVED` event — which is
+why Transfer always sees `CREATED → PENDING_APPROVAL` before `RELEASE_PENDING`; there is no code
+path straight from `CREATED` to `RELEASE_PENDING`. Every reaction above is also conditional on
+Transfer still being in the expected state, so at-least-once redelivery is always a no-op, never
+a duplicate state change or notification.
 
 ## Workflow Definitions (one fixed-shape YAML per tier, not guard-branching in one workflow)
 
 Every workflow YAML under `approval-engine/src/main/resources/workflow/definitions/` declares
 its own states, transitions, and per-transition `allowedRoles`/`requiredApprovals` — routing
 between tiers happens *before* the engine, by picking which workflow to instantiate (see Policy
-Contract below), not by a guard branching inside one shared workflow:
+Contract below), not by a guard branching inside one shared workflow. The five concepts this
+section and the next both lean on nest strictly, top to bottom:
 
-| Workflow (`workflowId:version`) | States | `approve` requires |
-|---|---|---|
-| `transfer-auto-release:1` | SUBMITTED → APPROVED | 0 approvals (unconditional transition) |
-| `transfer-single-checker:1` | + PENDING_APPROVAL, REJECTED, CANCELLED, EXPIRED | 1 × `TRANSFER_CHECKER` |
-| `transfer-high-value:1` | same shape as single-checker | 2 × `TRANSFER_CHECKER` |
-| `privileged-access:2` | SUBMITTED → SECURITY_REVIEW → MANAGER_APPROVAL → COMPLIANCE_REVIEW → APPROVED | 2 × `SECURITY_CHECKER`, then 1 × `MANAGER_CHECKER`, then 1 × `COMPLIANCE_CHECKER` |
+```mermaid
+flowchart TD
+    P["Policy\n(policy_rule row: amount range -> workflowId:version)"] --> W["Workflow\n(one YAML: WorkflowDefinition)"]
+    W --> S["Stage\n(a state, e.g. PENDING_APPROVAL / SECURITY_REVIEW)"]
+    S --> T["Transition\n(e.g. the 'approve' edge out of that stage)"]
+    T --> G["Guards\n(approvals_satisfied, actor_is_not_maker, sla_expired, ...)"]
+    T --> R["allowedRoles\n(who may fire this transition)"]
+    T --> N["requiredApprovals\n(quorum the approvals_satisfied guard checks against)"]
+```
+
+A **Policy** row only ever picks a `(workflowId, workflowVersion)` pair — it has no opinion on
+stages, transitions, guards, or quorum. Everything below **Workflow** in this hierarchy is that
+workflow's own business, declared once in its YAML and looked up by name at runtime, never
+computed from the policy that routed to it. `requiredApprovals` in particular is a field on
+`Transition` itself (Java: `Transition.requiredApprovals(): Integer`; YAML: `requiredApprovals:`
+under the transition) — not a workflow-level or policy-level setting. Absent/`null` means the
+transition is unconditional (`transfer-auto-release`'s only transition has none); any positive
+integer N means the `approvals_satisfied` guard (`ctx.currentApprovalCount() >=
+ctx.requiredApprovals()`) blocks that transition until N decisions matching `allowedRoles` have
+been recorded for the *current* stage. Because it's per-transition, not per-workflow, a single
+workflow can demand a different N at each stage — `privileged-access` requires 2 at
+`SECURITY_REVIEW` but only 1 at each of `MANAGER_APPROVAL` and `COMPLIANCE_REVIEW` — with no
+special-casing anywhere in the engine.
+
+| Workflow (`workflowId:version`) | Amount tier (AED) | States | `approve` requires |
+|---|---|---|---|
+| `transfer-auto-release:1` | < 5,000 | SUBMITTED → APPROVED | 0 approvals (unconditional transition) |
+| `transfer-single-checker:1` | 5,000 – 49,999.99 | + PENDING_APPROVAL, REJECTED, CANCELLED, EXPIRED | 1 × `TRANSFER_CHECKER` |
+| `transfer-high-value:1` | 50,000 – 99,999.99 | same shape as single-checker | 2 × `TRANSFER_CHECKER` |
+| `privileged-access:2` | ≥ 100,000 | SUBMITTED → SECURITY_REVIEW → MANAGER_APPROVAL → COMPLIANCE_REVIEW → APPROVED | 2 × `SECURITY_CHECKER`, then 1 × `MANAGER_CHECKER`, then 1 × `COMPLIANCE_CHECKER` |
 
 All definitions load once at startup into a `WorkflowRegistry` keyed by `(workflowId, version)`;
 guards (`approvals_satisfied`, `actor_is_maker`, `actor_is_not_maker`, `sla_expired`) are a small
@@ -68,8 +151,9 @@ eligibility is declarative (`allowedRoles` on the transition), not a guard funct
 workflow_version)` — an editable table in Approval Engine, not a formula in Banking. `GET
 /policy-rules/resolve?amountMinorUnits=N` returns the first row covering `N` as `{workflowId,
 workflowVersion}` (404 `POLICY_RULE_NOT_FOUND` if none covers it). Seeded once from
-`application.yml`'s ceiling values (AED 5,000 / 50,000 minor units) into the three transfer
-tiers; editable afterward via `PUT /policy-rules`, no redeploy.
+`application.yml`'s three ceiling values (AED 5,000 / 50,000 / 100,000 minor units) into the four
+rows in the table above — the last of which points at `privileged-access:2` instead of another
+transfer-shaped workflow; editable afterward via `PUT /policy-rules`, no redeploy.
 
 Policy resolution now happens in-process inside Approval Engine's `SubmissionCommandConsumer`
 (via `PolicyRuleResolutionService`) when it consumes the creation command off
@@ -98,21 +182,26 @@ separate policy object on the wire; they're the resolved workflow's own `approve
 ```
 
 **`POST /approvals/{id}/approve`** (no `Idempotency-Key` — idempotent per `(request_id,
-actor_id, state)`)
+actor_id, state)`). `id` here is the same value as `requestId` above — for a transfer, that's
+literally the transfer's own `transferId` (`TransferSubmissionService` passes it straight
+through as the engine's `requestId`; the engine never adds a prefix).
 ```json
 // Request                         // 200 Response
-{ "actorId": "checker-1",          { "requestId": "transfer-abc123",
+{ "actorId": "checker-1",          { "requestId": "abc123",
   "actorRole": "TRANSFER_CHECKER" }  "state": "APPROVED", "version": 2 }
 ```
 ```json
 // 409 CONCURRENT_STATE_CHANGE           // 409 INVALID_STATE_TRANSITION
 { "code": "CONCURRENT_STATE_CHANGE",     { "code": "INVALID_STATE_TRANSITION",
-  "requestId": "transfer-abc123",          "requestId": "transfer-abc123",
+  "requestId": "abc123",                   "requestId": "abc123",
   "currentState": "APPROVED",              "currentState": "APPROVED",
   "requestedAction": null }                "requestedAction": "approve" }
 ```
 `reject`/`cancel` share this shape (`ActorCommandDto`/`ApprovalResponseDto`/`ErrorResponseDto`);
-`GET /approvals/{id}` returns `ApprovalResponseDto`.
+`GET /approvals/{id}` returns `ApprovalResponseDto`. `GET /approvals?status={all|pending|
+completed}&mine={bool}` (header `X-Actor-Role`, required when `mine=true`, else `400
+INVALID_REQUEST`) lists `ApprovalRequestSummaryDto`s, server-side filtered to what that role can
+currently act on — the `mine=true` row in the error table below refers to this endpoint.
 
 | Error `code` | HTTP | When |
 |---|---|---|
@@ -129,7 +218,7 @@ only that the row was created, not that a workflow exists yet.
 ```json
 // Request
 { "makerId": "maker-1", "fromAccount": "ACC-1", "toAccount": "ACC-2",
-  "amountMinorUnits": 500000, "currency": "USD" }
+  "amountMinorUnits": 500000, "currency": "AED" }
 // 200 Response
 { "transferId": "abc123", "state": "CREATED" }
 ```
@@ -185,8 +274,35 @@ sequenceDiagram
     T->>Rd2: XACK
 ```
 
-**Multi-approver — the race diagram** (Checker A, Checker B approve concurrently, `required=1`;
-ground truth: `ApprovalConcurrencyTest.twoCheckersApprovingSimultaneously_exactlyOneWins`)
+**Multi-approver — quorum accumulation** (`transfer-high-value`, `required=2`; two *different*
+checkers approve in sequence, no race — this is the actual dual-control path the assignment
+names; ground truth: `ApprovalCommandServiceApproveTest.
+firstOfTwoRequiredApprovalsRecordsWithoutTransitioning` +
+`secondOfTwoRequiredApprovalsTransitionsToApproved`)
+
+```mermaid
+sequenceDiagram
+    participant A as Checker A
+    participant B as Checker B
+    participant E as Approval Engine
+    A->>E: POST /approve
+    E->>E: SELECT ... FOR UPDATE; count=0 < required=2 -> guard fails, no state UPDATE
+    E->>E: record decision (A, APPROVE); commit; count is now 1
+    E-->>A: 200 { state: PENDING_APPROVAL, version: 1 }
+    Note over E: still PENDING_APPROVAL -- quorum not yet met
+    B->>E: POST /approve
+    E->>E: SELECT ... FOR UPDATE; count=1 < required=2 still true at read time...
+    E->>E: record decision (B, APPROVE); count is now 2 -> guard now passes
+    E->>E: UPDATE WHERE state=PENDING_APPROVAL AND version=1 -> rows=1 (state=APPROVED, v2)
+    E-->>B: 200 { state: APPROVED, version: 2 }
+```
+
+This is the path that actually exercises the `SELECT ... FOR UPDATE` quorum-counting lock
+discussed below — a single approval never trips it alone, only the vote that completes quorum
+does.
+
+**Concurrent-approve race** (`required=1`; Checker A and Checker B race for the *same* single
+slot; ground truth: `ApprovalConcurrencyTest.twoCheckersApprovingSimultaneously_exactlyOneWins`)
 
 ```mermaid
 sequenceDiagram
@@ -204,8 +320,9 @@ sequenceDiagram
     E-->>B: 409 CONCURRENT_STATE_CHANGE { currentState: APPROVED }
 ```
 
-The row lock serializes quorum *counting* (needed for N>1); the guarded UPDATE's version check
-is what actually decides the winner and is what the sweeper below races against with no lock.
+The row lock serializes quorum *counting* (needed for N>1, shown in the quorum diagram above);
+the guarded UPDATE's version check is what actually decides the winner here and is what the
+sweeper below races against with no lock.
 
 **Expiry vs. approve** (optimistic race, no row lock on the sweeper's path; ground truth:
 `ExpiryVersusApproveConcurrencyTest.approveVersusExpire_exactlyOneWins`)
@@ -256,6 +373,18 @@ abort-and-redo plus retry code, for contention this shallow; *splitting "record 
 race without a lock but turns a synchronous decision eventually-consistent for no real gain at
 this scale. A `PESSIMISTIC_WRITE` held for one short cycle, on one row, contended by a handful
 of actors, is the simplest option that's actually correct.
+
+The same guarded UPDATE covers every other competing pair for free, with no special-casing per
+transition — including the maker-cancel-vs-checker-approve race: `cancel` and `approve` are both
+guarded transitions out of `PENDING_APPROVAL`, so whichever `UPDATE ... WHERE state =
+'PENDING_APPROVAL' AND version = ?` commits first wins; the other affects 0 rows and is classified
+the same way as any other lost race. Evidence: `ApprovalConcurrencyTest.
+cancelVersusApprove_exactlyOneWins`. The console additionally hides an actor's own approve/reject
+buttons once they've already decided the active stage (checked client-side against
+`activeStage.approvals`) — a UX nicety, not a control: the server-side `UNIQUE(request_id,
+actor_id, state)` constraint is what actually blocks a double decision (a second, contradictory
+decision from the same actor gets `409 IDEMPOTENCY_CONFLICT`); the client guard just avoids
+surfacing that as an error to someone who already knows they voted.
 
 ## Redis Stream Delivery
 
