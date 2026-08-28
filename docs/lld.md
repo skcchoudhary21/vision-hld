@@ -639,6 +639,14 @@ only that the row was created, not that a workflow exists yet.
 `GET /transfers/{id}` returns `TransferResponseDto`; poll it to observe `state` progress past
 `CREATED` once the creation command is consumed off `stream:transfer-approval-create`.
 
+**`GET /transfers?makerId={id}` / `GET /transfers?ids={id1,id2,...}`** (Banking) — two lookup shapes on
+one endpoint: by maker (a maker's own request history, newest first) or by an explicit id batch (the
+Approval Workspace resolving amounts for a page of unrelated requests in one round trip instead of one
+call per row). `ids`, when present, takes precedence over `makerId` entirely; with neither parameter,
+resolves to a `makerId = null` lookup, which returns an empty list in practice — this is not a
+documented "list everything" mode. Returns `List<TransferDetailDto>` — same shape as the
+single-resource `GET /transfers/{id}`.
+
 ## Data Model
 
 ```
@@ -1031,6 +1039,17 @@ the lifecycle stream so banking-service can move the transfer to `FAILED` and no
 the lifecycle side has no equivalent failure state to move to, so it logs loudly past 5 attempts
 rather than silently dropping the message (a full dead-letter mechanism is out of scope).
 
+**Why 3 and not 5, or the reverse — the two ceilings are tuned to what giving up actually buys each
+side, not picked independently.** Submission-side giving up has somewhere useful to land — `FAILED`,
+with the maker notified — and a maker is actively waiting on an answer for a request stuck at
+`CREATED`, so it's tuned to resolve that wait sooner (3 attempts) rather than let a transient blip hold
+the maker in limbo longer than necessary. Lifecycle-side giving up has no equivalent landing state: the
+engine's own state is already correct and complete by the time this reconciler runs, so declaring
+defeat only stops the retry noise — it fixes nothing for the maker. With nothing to gain by failing
+fast and a real cost to over-alerting on a transient blip, that side is tuned looser (5 attempts) before
+conceding a message needs manual attention. The asymmetry in count mirrors the asymmetry in what each
+give-up actually accomplishes, named here rather than left as an unexplained mismatch.
+
 Redelivery is safe everywhere it can happen because every consumer here was already idempotent
 before Redis existed: `ApprovalCommandService.create()` by `(Idempotency-Key, body hash)`,
 `ApprovalEventListener.handle()` by `processed_event.event_id`.
@@ -1064,6 +1083,20 @@ delivers exactly this out-of-order scenario and asserts the transfer still reach
 real ordering gap on the publish side, currently masked by defensive consumer-side state handling
 rather than closed by a guarantee — worth fixing at the source (e.g. sorting the loaded rows by
 `createdAt` before publishing) so correctness doesn't depend on the consumer continuing to compensate.
+
+**Ordering invariant, stated explicitly rather than left implicit.** Nothing in this system guarantees
+either stream delivers events in creation order — not `XADD`/`XREADGROUP` under redelivery or reclaim,
+and not, per the gap just named, the outbox relay's own claim batch. The design's actual correctness
+property is narrower and is the thing every consumer must uphold, today and for anything added later:
+**every transition a consumer applies is gated on the target's current state, never assumed to follow
+its logical predecessor.** Concretely: `ApprovalEventListener` only applies an event when the transfer
+is in the matching precondition state (`CREATED` is treated as a valid predecessor for *any* event
+type, not only `PENDING_APPROVAL`); the engine's own transitions go through the same guarded,
+version-checked `UPDATE` regardless of which caller or which order requests arrive in. This is why the
+claim-batch gap above is "masked," not "closed" — the invariant tolerates the disorder, it doesn't
+prevent it. **This is a standing design rule, not an accident of the current event set**: any new
+consumer, or any new pair of non-idempotent transitions added later, must be built to satisfy it, or
+this invariant breaks silently rather than loudly.
 
 ### Consumer acknowledgement rule
 

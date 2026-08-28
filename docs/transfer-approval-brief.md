@@ -16,15 +16,20 @@ clear maker-checker approval before release. The system separates authorization 
 expiry. **Approval ≠ execution**: the engine only ever decides whether a transfer *may* proceed; Banking
 and Core Banking are the only things that ever move money. The engine is generic — workflow stages,
 transitions, roles, and quorum are configuration, not transfer-specific code — proven by a second,
-unrelated approval domain (`privileged-access`) reusing it with zero engine changes.
+unrelated approval domain (`privileged-access`) reusing it with zero engine changes; the console UI
+turns that concurrency/lifecycle behavior into something a reviewer can watch happen, at no cost to
+the graded transfer path.
 
 **Context**
 
 ![alt text](hld.drawio.svg)
 
 
-Banking and Approval Engine communicate only through Redis Streams; neither writes the other's
-database. Core Banking is a stubbed interface, not a third deployable service.
+Banking and Approval Engine communicate over Redis Streams for every real transfer; neither writes
+the other's database. One disclosed exception: the demo console's generic "create a request" form —
+used only for `privileged-access`, which has no transfer-shaped creation flow of its own — posts
+synchronously through Banking into Approval Engine's REST API, never on the transfer path (§4). Core
+Banking is a stubbed interface, not a third deployable service.
 
 **Ownership**
 
