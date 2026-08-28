@@ -737,13 +737,13 @@ sequenceDiagram
     participant B as Checker B
     participant E as Approval Engine
     A->>E: POST /approve
-    E->>E: SELECT ... FOR UPDATE; count=0 < required=2 -> guard fails, no state UPDATE
-    E->>E: record decision (A, APPROVE); commit; count is now 1
+    E->>E: SELECT ... FOR UPDATE, count=0 < required=2 -> guard fails, no state UPDATE
+    E->>E: record decision (A, APPROVE), commit, count is now 1
     E-->>A: 200 { state: PENDING_APPROVAL, version: 1 }
     Note over E: still PENDING_APPROVAL -- quorum not yet met
     B->>E: POST /approve
-    E->>E: SELECT ... FOR UPDATE; count=1 < required=2 still true at read time...
-    E->>E: record decision (B, APPROVE); count is now 2 -> guard now passes
+    E->>E: SELECT ... FOR UPDATE, count=1 < required=2 still true at read time...
+    E->>E: record decision (B, APPROVE), count is now 2 -> guard now passes
     E->>E: UPDATE WHERE state=PENDING_APPROVAL AND version=1 -> rows=1 (state=APPROVED, v2)
     E-->>B: 200 { state: APPROVED, version: 2 }
 ```
@@ -790,7 +790,7 @@ sequenceDiagram
     and
         E->>E: UPDATE WHERE state=PENDING_APPROVAL AND version=1 -> APPROVED
     end
-    Note over E: exactly one UPDATE affects rows=1; the other rows=0 -> no-op / 409
+    Note over E: exactly one UPDATE affects rows=1, the other rows=0 -> no-op / 409
 ```
 
 **Privileged-access, end to end — expected flow, not test-covered** (unlike the four diagrams above,
@@ -811,8 +811,8 @@ sequenceDiagram
     M->>T: POST /transfers (amount >= AED 100,000)
     T->>T: persistCreated() -> CREATED, returns immediately
     T->>Rd1: XADD submission command
-    Rd1->>E: XREADGROUP; resolve policy -> privileged-access:2
-    E->>E: create(): SUBMITTED -> SECURITY_REVIEW; commit + outbox(ApprovalSubmitted)
+    Rd1->>E: XREADGROUP, resolve policy -> privileged-access:2
+    E->>E: create(), SUBMITTED -> SECURITY_REVIEW, commit + outbox(ApprovalSubmitted)
     E->>Rd2: relay: XADD ApprovalSubmitted
     Rd2->>T: XREADGROUP -> CREATED -> PENDING_APPROVAL
     Sec->>E: POST /approve x2 (SECURITY_CHECKER)
@@ -820,7 +820,7 @@ sequenceDiagram
     Mgr->>E: POST /approve (MANAGER_CHECKER)
     E->>E: quorum 1/1 -> MANAGER_APPROVAL -> COMPLIANCE_REVIEW
     Cmp->>E: POST /approve (COMPLIANCE_CHECKER)
-    E->>E: quorum 1/1 -> COMPLIANCE_REVIEW -> APPROVED; outbox(ApprovalApproved)
+    E->>E: quorum 1/1 -> COMPLIANCE_REVIEW -> APPROVED, outbox(ApprovalApproved)
     E->>Rd2: relay: XADD ApprovalApproved
     Rd2->>T: XREADGROUP -> PENDING_APPROVAL -> RELEASE_PENDING
     T->>CB: release(transferId)
